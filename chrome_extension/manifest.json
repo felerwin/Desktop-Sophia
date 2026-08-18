@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Send to Sophia's Tube",
+  "version": "1.0.0",
+  "description": "Send the current YouTube video and playback time to Sophia's local dashboard.",
+  "permissions": ["activeTab", "scripting"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Send this video to Sophia"
+  }
+}

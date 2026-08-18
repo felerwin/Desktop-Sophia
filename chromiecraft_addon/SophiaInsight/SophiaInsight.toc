@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: Sophia Insight
+## Notes: A read-only game-state and event feed for Desktop Sophia.
+## Author: Tony & Sophia
+## Version: 0.2.0
+## SavedVariables: SophiaInsightDB
+
+Core.lua
+Telemetry.lua

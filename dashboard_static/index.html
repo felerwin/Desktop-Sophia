@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sophia · Desktop Companion</title>
+  <meta name="description" content="Sophia's local companion dashboard">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="identity"><div class="avatar"><span></span></div><div><p class="eyebrow">DESKTOP COMPANION</p><h1>Sophia</h1></div></div>
+      <div class="headerActions"><div class="statusPill" id="statusPill"><i></i> Starting up</div><button class="sleepButton" id="sleepButton">Put her to sleep</button></div>
+    </header>
+    <section class="pulseCard">
+      <div class="pulseCopy"><p class="eyebrow">RIGHT NOW</p><h2 id="phaseLabel">Starting up…</h2><p id="systemLine">Preparing voice and microphone</p></div>
+      <div class="wave" aria-hidden="true"><span style="height:18px"></span><span style="height:32px"></span><span style="height:48px"></span><span style="height:25px"></span><span style="height:55px"></span><span style="height:38px"></span><span style="height:61px"></span><span style="height:29px"></span><span style="height:44px"></span><span style="height:20px"></span><span style="height:36px"></span><span style="height:16px"></span></div>
+      <div class="pulseMeta"><span id="micState">Starting</span><strong id="uptime">00:00:00</strong></div>
+    </section>
+    <section class="metricGrid">
+      <article><span>First audio</span><strong id="firstAudio">—</strong><small>Speech end to playback</small></article>
+      <article><span>Model first text</span><strong id="firstText">—</strong><small>Luna · none</small></article>
+      <article><span>Speech endpoint</span><strong id="endpointWait">—</strong><small id="sttTime">STT awaiting speech</small></article>
+      <article><span>Session cost</span><strong id="sessionCost">$0.0000</strong><small id="apiCalls">Luna usage</small></article>
+    </section>
+    <section class="panel mediaBay" id="the-tube">
+      <div class="panelHeader"><div><p class="eyebrow">THE TUBE</p><h3>YouTube player</h3></div><small id="youtubeStatus">Player warming up…</small></div>
+      <div class="mediaLayout">
+        <div>
+          <div class="youtubeStage" id="youtubeStage"><div id="youtubePlayer"></div></div>
+          <div class="youtubeControls">
+            <button type="button" data-video-action="pause">Pause</button>
+            <button type="button" data-video-action="resume">Resume</button>
+            <button type="button" data-video-action="stop">Stop</button>
+            <label for="youtubeSeek">Jump to</label><input id="youtubeSeek" inputmode="decimal" placeholder="0:23">
+            <button type="button" id="youtubeSeekButton">Go</button>
+            <label for="youtubeVolume">Volume</label><input id="youtubeVolume" type="range" min="0" max="100" value="70">
+          </div>
+        </div>
+        <div class="videoShelf">
+          <form id="youtubeForm" class="videoForm">
+            <h4>Add something to her shelf</h4>
+            <input id="youtubeUrl" type="url" required placeholder="YouTube link">
+            <div class="videoFormRow"><input id="youtubeTitle" type="text" maxlength="120" placeholder="Title"><input id="youtubeStart" type="text" placeholder="Start · 0:23"></div>
+            <textarea id="youtubeUseWhen" maxlength="280" placeholder="When should Sophia use this? e.g. after I finally beat a boss"></textarea>
+            <button type="submit">Save video</button>
+          </form>
+          <div class="savedVideos" id="savedVideos"><div class="soundEmpty"><strong>The shelf is empty</strong><span>Paste a YouTube link to give Sophia her first video.</span></div></div>
+        </div>
+      </div>
+    </section>
+    <section class="workspace">
+      <article class="conversation panel">
+        <div class="panelHeader"><div><p class="eyebrow">LIVE ROOM</p><h3>Conversation</h3></div><button class="textButton" id="clearTranscript">Clear transcript</button></div>
+        <div class="messages" id="messages"><div class="emptyState">Conversation will appear here when Sophia hears you.</div></div>
+        <div class="hearing"><i></i><span id="hearingText">Warming up…</span><kbd>LIVE</kbd><small>microphone</small></div>
+      </article>
+      <aside class="rail">
+        <article class="panel controls">
+          <div class="panelHeader"><div><p class="eyebrow">BEHAVIOR</p><h3>Autonomy</h3></div></div>
+          <div class="deviceControl"><label for="voiceSelector"><span><strong>Sophia’s voice</strong><small>Changes live after the current sentence</small></span></label><select id="voiceSelector" aria-label="Sophia’s voice"><option>Loading voices…</option></select></div>
+          <div class="deviceControl"><label for="microphoneSelector"><span><strong>Input microphone</strong><small>Reconnects the listener live</small></span></label><select id="microphoneSelector" aria-label="Input microphone"><option>Loading microphones…</option></select></div>
+          <label><span><strong>Speak aloud</strong><small>Local Kokoro voice</small></span><input data-control="speak_out_loud" type="checkbox"></label>
+          <label><span><strong>Screen awareness</strong><small>Notice meaningful changes</small></span><input data-control="screen_awareness" type="checkbox"></label>
+          <label><span><strong>Spontaneous remarks</strong><small>Respect the quiet-time rules</small></span><input data-control="spontaneous_remarks" type="checkbox"></label>
+          <label><span><strong>Long-term memory</strong><small>Recall relevant facts across sessions</small></span><input data-control="long_term_memory" type="checkbox"></label>
+          <label><span><strong>Game-event awareness</strong><small>React to reliable local game signals</small></span><input data-control="game_event_awareness" type="checkbox"></label>
+          <label><span><strong>Soundboard autonomy</strong><small>Sophia may press any understood button</small></span><input data-control="soundboard_autonomy" type="checkbox"></label>
+          <label><span><strong>Video autonomy</strong><small>Sophia may use videos from her saved shelf</small></span><input data-control="music_autonomy" type="checkbox"></label>
+        </article>
+        <article class="panel soundboard">
+          <div class="panelHeader"><div><p class="eyebrow">SOPHIA’S SOUNDBOARD</p><h3 id="soundboardTitle">Meme clips</h3></div><button class="addSoundButton" id="addSoundButton" type="button">+ Add clips</button><input id="soundUpload" type="file" accept="audio/mpeg,audio/wav,.mp3,.wav" multiple hidden></div>
+          <div class="soundGrid" id="soundGrid"><div class="soundEmpty"><strong>No clips yet</strong><span>Add MP3 or WAV meme clips to give Sophia some ammunition.</span></div></div>
+          <div class="soundControls"><button id="stopSound" type="button">■ Stop</button><label for="soundVolume">Volume</label><input id="soundVolume" type="range" min="0" max="1" step="0.05" value="0.8"><small id="soundStatus">Ready</small></div>
+        </article>
+        <details class="panel diagnostics"><summary><span>Diagnostics</span><small id="diagnosticState">Connecting…</small></summary><pre id="diagnosticLog">Waiting for Sophia…</pre></details>
+      </aside>
+    </section>
+    <section class="intelligenceGrid">
+      <article class="panel memoryPanel">
+        <div class="panelHeader"><div><p class="eyebrow">LONG-TERM MEMORY</p><h3>What Sophia remembers</h3></div><small id="memoryStats">Starting memory…</small></div>
+        <form id="memoryForm" class="memoryForm">
+          <select id="memoryCategory" aria-label="Memory category"><option value="fact">Fact</option><option value="preference">Preference</option><option value="goal">Goal</option><option value="game">Game</option><option value="person">Person</option><option value="explicit">Important</option></select>
+          <input id="memorySubject" maxlength="120" placeholder="Subject · optional">
+          <input id="memoryContent" maxlength="1200" required placeholder="Something Sophia should remember">
+          <label>Importance <input id="memoryImportance" type="range" min="0" max="1" step="0.1" value="0.6"></label>
+          <label class="pinMemory"><input id="memoryPinned" type="checkbox"> Pin</label>
+          <button type="submit">Remember</button>
+        </form>
+        <div class="memoryList" id="memoryList"><div class="soundEmpty"><strong>No long-term memories yet</strong><span>Tell Sophia “remember that…” or add one here.</span></div></div>
+        <details class="sessionHistory"><summary>Recent session summaries</summary><div id="sessionList"></div></details>
+      </article>
+      <div class="contextRail">
+        <article class="panel personalityPanel">
+          <div class="panelHeader"><div><p class="eyebrow">PERSONALITY</p><h3>Her compass</h3></div><small>Editable</small></div>
+          <div id="personalityFields" class="personalityFields"></div>
+        </article>
+        <article class="panel gameEventPanel">
+          <div class="panelHeader"><div><p class="eyebrow">GAME SENSE</p><h3>Reliable events</h3></div><small id="gameEventStatus">Looking for WoW logs…</small></div>
+          <div class="wowLiveState">
+            <div><span>Health</span><strong id="wowHealth">—</strong><i><b id="wowHealthBar"></b></i></div>
+            <div><span>Power</span><strong id="wowPower">—</strong><i><b id="wowPowerBar"></b></i></div>
+            <div><span>Target</span><strong id="wowTarget">No live signal</strong><small id="wowTargetMeta">Pixel bridge searching</small></div>
+          </div>
+          <div class="wowGear" id="wowGear"><div class="soundEmpty"><strong>Waiting for equipment</strong><span>The live bridge will transmit equipped items after login.</span></div></div>
+          <form id="gameConfigForm" class="gameConfigForm"><input id="wowLogPath" placeholder="WoWCombatLog.txt path · auto-detect by default"><input id="wowPlayerName" placeholder="Character name · improves death detection"><button type="submit">Save</button></form>
+          <div class="eventTestRow"><span>Test signal</span><button type="button" data-test-event="boss_start">Boss pull</button><button type="button" data-test-event="boss_victory">Victory</button><button type="button" data-test-event="player_death">Death</button><button type="button" data-test-event="quest_complete">Quest</button></div>
+          <div class="eventList" id="eventList"><div class="soundEmpty"><strong>No game events yet</strong><span>WoW combat-log events will appear here.</span></div></div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

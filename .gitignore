@@ -1,0 +1,38 @@
+.env
+.spotify_token.json
+__pycache__/
+*.pyc
+.venv/
+.kokoro_venv/
+
+# Local companion state and personal configuration
+config.json
+memory.json
+sophia_memory.db
+sophia_memory.db-*
+session_log.jsonl
+youtube_library.json
+soundboard/library.json
+
+# User-provided media stays local
+soundboard/*.mp3
+soundboard/*.wav
+soundboard/*.ogg
+soundboard/*.m4a
+soundboard/archive/
+
+# Frontend build/install output
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.wrangler/
+dashboard/dist/
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local migration material superseded by README.md and current source
+archive/
+/README.txt
