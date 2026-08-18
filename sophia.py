@@ -12,7 +12,9 @@ from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
 from game_events import GameEventEngine
 from memory_store import MemoryStore
+from speech_filter import transcript_rejection_reason
 from spotify_control import SpotifyClient, SpotifyError
+from usage_costs import budget_decision, response_cost, transcription_cost
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -28,6 +30,7 @@ def configured_python(value, fallback):
     if not candidate.is_absolute():
         candidate = ROOT / candidate
     return str(candidate.resolve())
+
 
 SYSTEM = """
 You are Desktop Sophia, an AI gaming companion sharing the room with Tony while he plays.
@@ -70,6 +73,15 @@ Act like a friend watching a Discord gameplay stream:
 - Silence is allowed for unsolicited observations.
 - When Tony directly speaks to you, treat it as conversation: respond naturally unless his words are clearly not directed at you.
 - If Tony asks about what is on screen, use the screenshot as shared context.
+- Keep evidence sources straight. Values marked telemetry or combat_log are reliable
+  local signals. Screenshot-only details are visual inferences. Never claim that an
+  inference came from the addon, combat log, or another exact source.
+- The pixel grid is available only when telemetry_available is true and
+  telemetry_status is "live". If it is searching, lost, disabled, or errored, say
+  that you are not receiving the grid. Never use the words "the pixel grid says" or
+  "the addon says" for details learned from a screenshot or from Tony.
+- Calibrate your language to confidence: state reliable telemetry directly; use
+  "I think," "it looks like," or a question when the evidence is only visual.
 
 You must respond with EXACTLY one line, and nothing else, in one of these four forms:
 SAY: <what you want to say aloud>
@@ -104,6 +116,8 @@ SAY. If he asks why you just played a sound, explain the most recent clip choice
 than an earlier spoken remark. Never invent a clip id.
 Media affinity is learned from Tony's reactions: favor positive scores and treat negative
 scores as a warning that the choice has not been landing well.
+Sound descriptions marked as user corrections are authoritative. If Tony corrects what
+a clip contains, accept the correction plainly; never defend or repeat the old label.
 
 For VIDEO, proactively start a fitting saved video when its use_when clearly describes
 the current phase: a grind settling in, a boss fight beginning, a locale change, or a
@@ -135,6 +149,10 @@ _soundboard_playing = threading.Event()
 _session_input_tokens = 0
 _session_output_tokens = 0
 _session_estimated_cost = 0.0
+_session_governed_cost = 0.0
+_autonomy_budget_override = False
+_budget_warning_emitted = False
+_budget_pause_emitted = False
 _last_companion_action_at = 0.0
 _spotify = None
 _dashboard = None
@@ -628,15 +646,76 @@ class VoiceListener:
         with self._transcribe_lock:
             stt_started_at = time.perf_counter()
             path = self._write_wav(audio)
+            usage_event_id = None
             try:
                 with open(path, "rb") as f:
                     result = self.client.audio.transcriptions.create(
                         model=self.transcription_model,
                         file=f,
+                        language=str(CONFIG.get("transcription_language", "en")),
+                        response_format="json",
+                        include=["logprobs"],
                     )
+                audio_seconds = len(audio) / self.sample_rate
+                usage = getattr(result, "usage", None)
+                usage_input = int(getattr(usage, "input_tokens", 0) or 0)
+                usage_output = int(getattr(usage, "output_tokens", 0) or 0)
+                reported_seconds = float(getattr(usage, "seconds", 0) or audio_seconds)
+                estimated_cost = transcription_cost(
+                    self.transcription_model, reported_seconds
+                )
+                usage_event_id = record_billed_usage(
+                    "transcription", self.transcription_model,
+                    estimated_cost or 0,
+                    (
+                        "duration_estimate" if estimated_cost is not None
+                        else "usage_returned_unpriced"
+                    ),
+                    input_tokens=usage_input, output_tokens=usage_output,
+                    audio_seconds=reported_seconds,
+                )
                 text = (getattr(result, "text", "") or "").strip()
                 if text:
                     stt_finished_at = time.perf_counter()
+                    token_logprobs = [
+                        float(item.logprob)
+                        for item in (getattr(result, "logprobs", None) or [])
+                        if getattr(item, "logprob", None) is not None
+                    ]
+                    average_logprob = (
+                        sum(token_logprobs) / len(token_logprobs)
+                        if token_logprobs else None
+                    )
+                    voiced_seconds = max(
+                        0.0,
+                        float(speech_last_loud_at or speech_detected_at)
+                        - float(speech_detected_at - len(audio) / self.sample_rate),
+                    )
+                    rejection = transcript_rejection_reason(
+                        text,
+                        average_logprob=average_logprob,
+                        voiced_seconds=voiced_seconds,
+                        minimum_logprob=CONFIG.get("mic_minimum_transcript_logprob", -0.7),
+                        short_fragment_seconds=CONFIG.get(
+                            "mic_short_fragment_seconds", 0.45
+                        ),
+                    )
+                    if CONFIG.get("mic_filter_ambient_speech", True) and rejection:
+                        update_usage_outcome(
+                            usage_event_id, "transcript_rejected", rejection
+                        )
+                        log_event(
+                            "TRANSCRIPT_REJECTED",
+                            text=text,
+                            reason=rejection,
+                            average_logprob=(
+                                round(average_logprob, 3)
+                                if average_logprob is not None else None
+                            ),
+                            voiced_seconds=round(voiced_seconds, 3),
+                        )
+                        return
+                    update_usage_outcome(usage_event_id, "transcript_accepted")
                     timing = {
                         "speech_last_loud_at": speech_last_loud_at,
                         "speech_detected_at": speech_detected_at,
@@ -648,8 +727,20 @@ class VoiceListener:
                         text=text,
                         endpoint_wait_seconds=round(speech_detected_at - speech_last_loud_at, 3),
                         stt_seconds=round(stt_finished_at - stt_started_at, 3),
-                    )
+                        average_logprob=(
+                            round(average_logprob, 3)
+                            if average_logprob is not None else None
+                        ),
+                        )
+                else:
+                    update_usage_outcome(usage_event_id, "empty_transcript")
             except Exception as e:
+                if usage_event_id is None:
+                    usage_event_id = record_billed_usage(
+                        "transcription", self.transcription_model, 0,
+                        "unknown", audio_seconds=len(audio) / self.sample_rate,
+                    )
+                update_usage_outcome(usage_event_id, "api_error", str(e))
                 log_event("STT_ERROR", detail=str(e))
             finally:
                 try:
@@ -838,7 +929,13 @@ def handle_game_event(event):
         title=event.get("title"),
         priority=event.get("priority"),
         source=event.get("source"),
+        evidence=event.get("evidence"),
+        confidence=event.get("confidence"),
     )
+
+
+def handle_pixel_bridge_status(status):
+    log_event("PIXEL_BRIDGE_STATUS", **status)
 
 
 def import_existing_memory_history():
@@ -875,7 +972,84 @@ def youtube_context(spontaneous=False):
 def game_context():
     if _game_events is None or not CONFIG.get("game_event_awareness", True):
         return "No local game telemetry is available."
-    return json.dumps(_game_events.context(), ensure_ascii=False)
+    context = _game_events.context()
+    availability = (
+        "PIXEL GRID IS LIVE: exact telemetry fields may be cited."
+        if context.get("telemetry_available") else
+        "PIXEL GRID IS NOT LIVE: do not claim any screenshot or conversational "
+        "detail came from the grid/addon."
+    )
+    return availability + "\n" + json.dumps(context, ensure_ascii=False)
+
+
+def update_usage_outcome(event_id, outcome, detail=""):
+    if _memory_store is not None and event_id:
+        _memory_store.update_usage_outcome(event_id, outcome, detail)
+
+
+def record_billed_usage(
+    call_type, model, estimated_cost, billing_status,
+    request_id="", input_tokens=0, output_tokens=0,
+    cached_input_tokens=0,
+    audio_input_tokens=0, audio_output_tokens=0, audio_seconds=0,
+):
+    global _session_input_tokens, _session_output_tokens
+    global _session_estimated_cost, _session_governed_cost
+    input_tokens = int(input_tokens or 0)
+    output_tokens = int(output_tokens or 0)
+    raw_cost = float(estimated_cost or 0)
+    multiplier = max(1.0, float(CONFIG.get("cost_safety_multiplier", 1.25)))
+    governed_cost = raw_cost * multiplier
+    _session_input_tokens += input_tokens
+    _session_output_tokens += output_tokens
+    _session_estimated_cost += raw_cost
+    _session_governed_cost += governed_cost
+    event_id = None
+    if _memory_store is not None:
+        event_id = _memory_store.record_usage_event(
+            _session_id, call_type, model, billing_status=billing_status,
+            request_id=request_id, input_tokens=input_tokens,
+            output_tokens=output_tokens, cached_input_tokens=cached_input_tokens,
+            audio_input_tokens=audio_input_tokens,
+            audio_output_tokens=audio_output_tokens, audio_seconds=audio_seconds,
+            estimated_cost=raw_cost, governed_cost=governed_cost,
+        )
+    log_event(
+        "API_USAGE", call_type=call_type, model=model,
+        billing_status=billing_status, input_tokens=input_tokens,
+        output_tokens=output_tokens, cached_input_tokens=cached_input_tokens,
+        audio_input_tokens=audio_input_tokens,
+        audio_output_tokens=audio_output_tokens, audio_seconds=round(float(audio_seconds or 0), 3),
+        estimated_cost_usd=round(raw_cost, 6),
+        governed_cost_usd=round(governed_cost, 6),
+        session_estimated_cost_usd=round(_session_estimated_cost, 6),
+        session_governed_cost_usd=round(_session_governed_cost, 6),
+    )
+    return event_id
+
+
+def budget_state():
+    warning = max(0.0, float(CONFIG.get("autonomy_budget_warning_usd", 0.15)))
+    ceiling = max(warning, float(CONFIG.get("autonomy_budget_ceiling_usd", 0.25)))
+    enabled = bool(CONFIG.get("autonomy_budget_enabled", True))
+    decision = budget_decision(
+        _session_governed_cost, warning, ceiling, enabled, _autonomy_budget_override
+    )
+    return {
+        "enabled": enabled, "warning_usd": warning, "ceiling_usd": ceiling,
+        "estimated_cost_usd": round(_session_estimated_cost, 6),
+        "governed_cost_usd": round(_session_governed_cost, 6),
+        **decision, "override": _autonomy_budget_override,
+    }
+
+
+def resume_autonomy_budget():
+    global _autonomy_budget_override, _budget_pause_emitted
+    _autonomy_budget_override = True
+    _budget_pause_emitted = False
+    state = budget_state()
+    log_event("AUTONOMY_BUDGET_RESUMED", **state)
+    return state
 
 
 def parse_video_action(content):
@@ -891,40 +1065,33 @@ def parse_video_action(content):
     return kind, action.get("id"), action.get("seconds")
 
 
-def log_api_usage(response, model):
+def log_api_usage(response, model, call_type="response"):
     """Log exact token counts and an estimated Luna cost for this session."""
-    global _session_input_tokens, _session_output_tokens, _session_estimated_cost
     usage = getattr(response, "usage", None)
     if usage is None:
-        return
+        return record_billed_usage(
+            call_type, model, 0, "returned_without_usage",
+            request_id=getattr(response, "id", ""),
+        )
 
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    _session_input_tokens += input_tokens
-    _session_output_tokens += output_tokens
-
-    # Current GPT-5.6 Luna standard rates: $1/M input, $6/M output.
-    estimated_cost = 0.0
-    if model == "gpt-5.6-luna":
-        estimated_cost = input_tokens / 1_000_000 + output_tokens * 6 / 1_000_000
-        _session_estimated_cost += estimated_cost
-
-    log_event(
-        "API_USAGE",
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        estimated_cost_usd=round(estimated_cost, 6),
-        session_estimated_cost_usd=round(_session_estimated_cost, 6),
+    details = getattr(usage, "input_tokens_details", None)
+    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+    estimated_cost = response_cost(model, input_tokens, output_tokens, cached_tokens)
+    return record_billed_usage(
+        call_type, model, estimated_cost or 0,
+        "usage_returned" if estimated_cost is not None else "usage_returned_unpriced",
+        request_id=getattr(response, "id", ""), input_tokens=input_tokens,
+        output_tokens=output_tokens, cached_input_tokens=cached_tokens,
     )
 
 
 def log_audio_api_usage(completion, model):
     """Include one-time clip analysis in the visible session cost meter."""
-    global _session_input_tokens, _session_output_tokens, _session_estimated_cost
     usage = getattr(completion, "usage", None)
     if usage is None:
-        return
+        return record_billed_usage("sound_analysis", model, 0, "returned_without_usage")
     input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
     prompt_details = getattr(usage, "prompt_tokens_details", None)
@@ -933,24 +1100,17 @@ def log_audio_api_usage(completion, model):
     audio_output = int(getattr(completion_details, "audio_tokens", 0) or 0)
     text_input = max(0, input_tokens - audio_input)
     text_output = max(0, output_tokens - audio_output)
-    _session_input_tokens += input_tokens
-    _session_output_tokens += output_tokens
-
     estimated_cost = 0.0
     if model == "gpt-audio-1.5":
         estimated_cost = (
             text_input * 2.5 + text_output * 10 + audio_input * 32 + audio_output * 64
         ) / 1_000_000
-        _session_estimated_cost += estimated_cost
-    log_event(
-        "API_USAGE",
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        audio_input_tokens=audio_input,
+    return record_billed_usage(
+        "sound_analysis", model, estimated_cost,
+        "usage_returned" if estimated_cost else "usage_returned_unpriced",
+        request_id=getattr(completion, "id", ""), input_tokens=input_tokens,
+        output_tokens=output_tokens, audio_input_tokens=audio_input,
         audio_output_tokens=audio_output,
-        estimated_cost_usd=round(estimated_cost, 6),
-        session_estimated_cost_usd=round(_session_estimated_cost, 6),
     )
 
 
@@ -963,43 +1123,54 @@ def analyze_sound_clip(client, path, timeout_seconds):
     _api_call_count += 1
     model = os.getenv("OPENAI_AUDIO_MODEL", "gpt-audio-1.5")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    completion = client.with_options(timeout=timeout_seconds).chat.completions.create(
-        model=model,
-        modalities=["text", "audio"],
-        audio={"voice": "alloy", "format": "wav"},
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Identify this short soundboard clip. Return only compact JSON with "
-                        "three string fields: description (what is audibly happening), use_when "
-                        "(situations where a gaming companion could use it for humor or celebration), "
-                        "and transcript (spoken words, or an empty string). Keep each field concise."
-                    ),
-                },
-                {"type": "input_audio", "input_audio": {"data": encoded, "format": audio_format}},
-            ],
-        }],
-    )
-    log_audio_api_usage(completion, model)
-    message = completion.choices[0].message
-    raw = (getattr(message, "content", None) or "").strip()
-    if not raw:
-        raw = (getattr(getattr(message, "audio", None), "transcript", None) or "").strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
-    json_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-    result = json.loads(json_match.group(0) if json_match else raw)
-    if not isinstance(result, dict):
-        raise ValueError("The audio model returned an unexpected description.")
+    try:
+        completion = client.with_options(timeout=timeout_seconds).chat.completions.create(
+            model=model,
+            modalities=["text", "audio"],
+            audio={"voice": "alloy", "format": "wav"},
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Identify the literal audio in the attached soundboard file named "
+                            f"'{path.name}'. Return only compact JSON with three string fields: "
+                            "description (only what is audibly happening), use_when (situations where "
+                            "that exact sound fits), and transcript (spoken words, or an empty string). "
+                            "Do not reinterpret an impact as a rimshot or an electronic error tone as "
+                            "music/fanfare. If uncertain, say so in the description instead of guessing."
+                        ),
+                    },
+                    {"type": "input_audio", "input_audio": {"data": encoded, "format": audio_format}},
+                ],
+            }],
+        )
+    except Exception as exc:
+        usage_event_id = record_billed_usage("sound_analysis", model, 0, "unknown")
+        update_usage_outcome(usage_event_id, "api_error", str(exc))
+        raise
+    usage_event_id = log_audio_api_usage(completion, model)
+    try:
+        message = completion.choices[0].message
+        raw = (getattr(message, "content", None) or "").strip()
+        if not raw:
+            raw = (getattr(getattr(message, "audio", None), "transcript", None) or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
+        json_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        result = json.loads(json_match.group(0) if json_match else raw)
+        if not isinstance(result, dict):
+            raise ValueError("The audio model returned an unexpected description.")
+    except Exception as exc:
+        update_usage_outcome(usage_event_id, "malformed_output", str(exc))
+        raise
+    update_usage_outcome(usage_event_id, "accepted")
     log_event("SOUNDBOARD_ANALYZED", name=path.stem, model=model, api_call_count=_api_call_count)
     return result
 
 
 def call_model(client, model, prompt, img, timeout_seconds, max_retries=2):
-    """Returns (raw_text, None) on success, or (None, (KIND, detail)) on
-    failure, where KIND is one of TIMEOUT, RATE_LIMITED, API_ERROR."""
+    """Returns (raw_text, error, usage_event_id). Usage is persisted before parsing."""
     global _api_call_count
     backoff = 2.0
     for attempt in range(max_retries + 1):
@@ -1017,22 +1188,34 @@ def call_model(client, model, prompt, img, timeout_seconds, max_retries=2):
                     "content": content,
                 }],
             )
-            log_api_usage(response, model)
-            return response.output_text, None
+            usage_event_id = log_api_usage(response, model, "autonomous_response")
+            return response.output_text, None, usage_event_id
         except APITimeoutError as e:
-            return None, ("TIMEOUT", str(e))
+            event_id = record_billed_usage(
+                "autonomous_response", model, 0, "unknown"
+            )
+            update_usage_outcome(event_id, "timeout", str(e))
+            return None, ("TIMEOUT", str(e)), event_id
         except RateLimitError as e:
             if attempt < max_retries:
                 log_event("RATE_LIMITED", attempt=attempt + 1, retrying_in_seconds=backoff)
                 time.sleep(backoff)
                 backoff *= 2
                 continue
-            return None, ("RATE_LIMITED", str(e))
+            event_id = record_billed_usage(
+                "autonomous_response", model, 0, "not_billed_rate_limit"
+            )
+            update_usage_outcome(event_id, "rate_limited", str(e))
+            return None, ("RATE_LIMITED", str(e)), event_id
         except APIError as e:
-            return None, ("API_ERROR", str(e))
+            event_id = record_billed_usage("autonomous_response", model, 0, "unknown")
+            update_usage_outcome(event_id, "api_error", str(e))
+            return None, ("API_ERROR", str(e)), event_id
         except Exception as e:
-            return None, ("API_ERROR", str(e))
-    return None, ("RATE_LIMITED", "max retries exceeded")
+            event_id = record_billed_usage("autonomous_response", model, 0, "unknown")
+            update_usage_outcome(event_id, "api_error", str(e))
+            return None, ("API_ERROR", str(e)), event_id
+    return None, ("RATE_LIMITED", "max retries exceeded"), None
 
 
 class StreamedSpeechParser:
@@ -1094,6 +1277,7 @@ def call_model_streaming(client, model, prompt, img, timeout_seconds, on_phrase)
     parser = StreamedSpeechParser(on_phrase)
     first_delta_at = None
     completed_response = None
+    failed_response = None
     try:
         content = [{"type": "input_text", "text": prompt}]
         if img is not None:
@@ -1119,20 +1303,43 @@ def call_model_streaming(client, model, prompt, img, timeout_seconds, on_phrase)
             elif event_type == "response.completed":
                 completed_response = getattr(event, "response", None)
             elif event_type in {"response.failed", "error"}:
+                failed_response = getattr(event, "response", None)
                 raise RuntimeError(str(event))
 
         parser.finish()
+        usage_event_id = None
         if completed_response is not None:
-            log_api_usage(completed_response, model)
-        return parser.raw, None, first_delta_at
+            usage_event_id = log_api_usage(
+                completed_response, model, "conversation_response"
+            )
+        else:
+            usage_event_id = record_billed_usage(
+                "conversation_response", model, 0, "unknown"
+            )
+            update_usage_outcome(usage_event_id, "incomplete_stream")
+        return parser.raw, None, first_delta_at, usage_event_id
     except APITimeoutError as exc:
-        return None, ("TIMEOUT", str(exc)), first_delta_at
+        event_id = record_billed_usage("conversation_response", model, 0, "unknown")
+        update_usage_outcome(event_id, "timeout", str(exc))
+        return None, ("TIMEOUT", str(exc)), first_delta_at, event_id
     except RateLimitError as exc:
-        return None, ("RATE_LIMITED", str(exc)), first_delta_at
+        event_id = record_billed_usage(
+            "conversation_response", model, 0, "not_billed_rate_limit"
+        )
+        update_usage_outcome(event_id, "rate_limited", str(exc))
+        return None, ("RATE_LIMITED", str(exc)), first_delta_at, event_id
     except APIError as exc:
-        return None, ("API_ERROR", str(exc)), first_delta_at
+        event_id = record_billed_usage("conversation_response", model, 0, "unknown")
+        update_usage_outcome(event_id, "api_error", str(exc))
+        return None, ("API_ERROR", str(exc)), first_delta_at, event_id
     except Exception as exc:
-        return None, ("API_ERROR", str(exc)), first_delta_at
+        event_id = (
+            log_api_usage(failed_response, model, "conversation_response")
+            if failed_response is not None else
+            record_billed_usage("conversation_response", model, 0, "unknown")
+        )
+        update_usage_outcome(event_id, "api_error", str(exc))
+        return None, ("API_ERROR", str(exc)), first_delta_at, event_id
 
 
 
@@ -1148,10 +1355,11 @@ def handle_spoken_turn(client, model, request_timeout, tts_worker, mem, turn):
         learned = _memory_store.observe_utterance(transcript)
         if learned:
             log_event("MEMORY_LEARNED", count=len(learned), subjects=[item["subject"] for item in learned])
+    media_observation = None
     if _dashboard is not None:
-        feedback = _dashboard.observe_media_feedback(transcript)
-        if feedback:
-            log_event("MEDIA_FEEDBACK", **feedback)
+        media_observation = _dashboard.observe_media_feedback(transcript)
+        if media_observation:
+            log_event("MEDIA_FEEDBACK", **media_observation)
 
     if _spotify is not None:
         try:
@@ -1201,6 +1409,9 @@ Relevant long-term memories (use only when genuinely relevant; never invent deta
 Current personality profile:
 {personality_context()}
 
+Soundboard feedback or corrections just persisted from Tony's words:
+{json.dumps(media_observation, ensure_ascii=False) if media_observation else "None"}
+
 Available soundboard clips:
 {soundboard_context(spontaneous=False)}
 
@@ -1237,7 +1448,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
             ),
         )
 
-    raw_out, err, first_delta_at = call_model_streaming(
+    raw_out, err, first_delta_at, usage_event_id = call_model_streaming(
         client,
         model,
         prompt,
@@ -1260,12 +1471,16 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
 
     match = OUTPUT_LINE_RE.match(raw_out.strip()) if raw_out else None
     if not match:
+        update_usage_outcome(
+            usage_event_id, "malformed_output", (raw_out or "")[:300]
+        )
         log_event("MALFORMED_OUTPUT", raw=(raw_out or "")[:300],
                   api_call_count=_api_call_count)
         return
 
     kind = match.group(1).upper()
     content = match.group(2).strip()
+    update_usage_outcome(usage_event_id, f"parsed_{kind.lower()}")
     stamp = datetime.now().isoformat(timespec="seconds")
 
     mem["recent_observations"].append({"time": stamp, "note": f"Tony said: {transcript}"})
@@ -1331,7 +1546,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
 
 def main():
     global _spotify, _dashboard, _memory_store, _game_events, _session_id
-    global _last_companion_action_at
+    global _last_companion_action_at, _budget_warning_emitted, _budget_pause_emitted
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         raise SystemExit("Missing OPENAI_API_KEY. Copy .env.example to .env and add your key.")
@@ -1340,9 +1555,14 @@ def main():
     model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
     _memory_store = MemoryStore(ROOT / "sophia_memory.db")
     _session_id = _memory_store.start_session()
-    _game_events = GameEventEngine(ROOT, CONFIG, on_event=handle_game_event)
+    _game_events = GameEventEngine(
+        ROOT, CONFIG,
+        on_event=handle_game_event,
+        on_status=handle_pixel_bridge_status,
+    )
     _dashboard = DashboardHub(ROOT, CONFIG, _shutdown_requested)
     _dashboard.set_context_services(_memory_store, _game_events)
+    _dashboard.set_budget_handlers(budget_state, resume_autonomy_budget)
     import_existing_memory_history()
     try:
         _dashboard.start(
@@ -1446,6 +1666,23 @@ def main():
                 _shutdown_requested.wait(0.25)
                 continue
 
+            current_budget = budget_state()
+            if current_budget["warning"] and not _budget_warning_emitted:
+                _budget_warning_emitted = True
+                log_event("AUTONOMY_BUDGET_WARNING", **current_budget)
+            if current_budget["paused"]:
+                if not _budget_pause_emitted:
+                    _budget_pause_emitted = True
+                    log_event("AUTONOMY_BUDGET_PAUSED", **current_budget)
+                transcript = interruptible_sleep(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener
+                )
+                if transcript:
+                    handle_spoken_turn(
+                        client, model, request_timeout, tts_worker, mem, transcript
+                    )
+                continue
+
             game_event = (
                 _game_events.pop_reaction()
                 if _game_events is not None and CONFIG.get("game_event_awareness", True)
@@ -1517,7 +1754,18 @@ GAME EVENT TOOL TURN: a boss encounter just started. SAY is not allowed. Prefer
 a VIDEO whose use_when matches a boss fight; otherwise use a battle-opening SOUND.
 Use SILENT only if neither library has a defensible match.
 """
-            elif tool_turn and event_type in {"boss_victory", "boss_wipe", "player_death", "level_up", "quest_complete"}:
+            elif tool_turn and event_type in {"zone_change", "activity_change"} and video_opening:
+                reaction_mode = f"""
+GAME PHASE TOOL TURN: {event_type.replace('_', ' ')} just occurred. SAY is not
+allowed. Prefer a saved VIDEO whose use_when matches the new locale or activity.
+Choose SOUND only if a clip specifically fits the transition. Use SILENT when
+the media shelf has no honest match; do not change music merely because you can.
+"""
+            elif tool_turn and event_type in {
+                "boss_victory", "boss_wipe", "player_death", "level_up",
+                "quest_complete", "hard_fought_victory", "gear_upgrade",
+                "critical_health", "danger_recovered", "valuable_loot",
+            }:
                 reaction_mode = f"""
 GAME EVENT TOOL TURN: {event_type.replace('_', ' ')} just occurred. SAY is not
 allowed. Choose the best semantically matching SOUND. Use a celebration video
@@ -1579,7 +1827,9 @@ clip's use_when fits the visible event, prefer pressing it over narrating the sa
 When a saved video's use_when matches a new activity phase, start it now rather than
 waiting for Tony to ask.
 """
-            raw_out, err = call_model(client, model, prompt, img, request_timeout)
+            raw_out, err, usage_event_id = call_model(
+                client, model, prompt, img, request_timeout
+            )
 
             if err:
                 kind, detail = err
@@ -1593,6 +1843,9 @@ waiting for Tony to ask.
             match = OUTPUT_LINE_RE.match(raw_out.strip()) if raw_out else None
 
             if not match:
+                update_usage_outcome(
+                    usage_event_id, "malformed_output", (raw_out or "")[:300]
+                )
                 log_event("MALFORMED_OUTPUT", raw=(raw_out or "")[:300],
                            api_call_count=_api_call_count)
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
@@ -1602,6 +1855,7 @@ waiting for Tony to ask.
 
             kind = match.group(1).upper()
             content = match.group(2).strip()
+            update_usage_outcome(usage_event_id, f"parsed_{kind.lower()}")
             autonomous_tool_used = False
 
             # The cadence is a real policy, not another suggestion the model
@@ -1696,6 +1950,7 @@ waiting for Tony to ask.
             input_tokens=_session_input_tokens,
             output_tokens=_session_output_tokens,
             estimated_cost_usd=round(_session_estimated_cost, 6),
+            governed_cost_usd=round(_session_governed_cost, 6),
         )
         if _game_events is not None:
             _game_events.stop()

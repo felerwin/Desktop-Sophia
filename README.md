@@ -44,13 +44,36 @@ spontaneous remarks, soundboard, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
 
+### Cost governor
+
+The dashboard shows both the raw session estimate and a safety-adjusted guarded
+amount. OpenAI usage is written to the local SQLite ledger as soon as a response
+returns, before Sophia parses, filters, or rejects its content. A malformed model
+reply or rejected transcription therefore still counts toward the total.
+
+At the configured ceiling, only autonomous screen and game-reaction calls pause;
+direct microphone conversation remains available. The dashboard can resume
+autonomy for the rest of the current session. Daily totals are calculated from
+the same usage-event ledger rather than maintained as a second counter.
+
+These values are estimates, not an OpenAI invoice. The default 1.25 safety
+multiplier leaves room for estimation drift, and should be reconciled against the
+OpenAI usage dashboard periodically. Limits and the multiplier live in
+`config.json` under `autonomy_budget_*` and `cost_safety_multiplier`.
+
 ## Optional integrations
 
 ### Soundboard
 
 Add MP3 or WAV clips from the dashboard. Clips and their generated descriptions
 remain local and are deliberately excluded from Git. Sophia can press understood
-buttons autonomously when the moment fits.
+buttons autonomously when the moment fits. Use the pencil beside a clip to correct
+what it contains and when it belongs. Spoken corrections such as “metal pipe is
+metal pipes falling over” are also saved immediately and override audio analysis.
+
+The microphone listener requests English transcription confidence and rejects
+low-confidence, non-English-script, and extremely short ambient fragments. Rejected
+audio is recorded as `TRANSCRIPT_REJECTED` in the session log for tuning.
 
 ### YouTube
 
@@ -76,6 +99,18 @@ folder and enable the addon. Its visible pixel bridge gives Sophia read-only
 state, target, equipment, loot, and zone data. Combat-log events can additionally
 be configured from the dashboard.
 
+Game Sense keeps a short temporal model over those signals. It recognizes stable
+activity changes, combat boundaries, minimum health during a fight, danger and
+recovery, probable hard-fought victories, zone changes, and equipment upgrades.
+The decoder accepts fractionally scaled grids from maximized or GPU-scaled game
+windows. Bridge transitions are written as `PIXEL_BRIDGE_STATUS`; only `live`
+status exposes exact grid values to Sophia, preventing stale or screenshot-derived
+details from being described as addon telemetry.
+Dashboard events identify both their evidence source and confidence. Exact addon
+values are labeled `telemetry`; conclusions formed across several exact states are
+labeled `telemetry_derived`; screenshot-only interpretations remain visual
+inferences and must not be presented as addon facts.
+
 ## Local and private files
 
 The repository intentionally does not include:
@@ -93,8 +128,8 @@ installation.
 ## Development checks
 
 ```powershell
-.venv\Scripts\python.exe -m unittest test_spotify_control.py
-.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py spotify_control.py wow_pixel_bridge.py
+.venv\Scripts\python.exe -m unittest test_game_events.py test_reliability.py test_spotify_control.py test_usage_costs.py test_behavior_fixtures.py
+.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py speech_filter.py spotify_control.py usage_costs.py wow_pixel_bridge.py
 cd dashboard
 npm install
 npm test
