@@ -151,7 +151,9 @@ class EmberOverlay:
             frames = self._scaled_frames(animation)
             photo = None
             target: tuple[int, int, int, int] | None = None
+            target_kind = "wander"
             look_angle: float | None = None
+            look_until = 0.0
             one_shot = False
             next_wander_at = time.monotonic() + random.uniform(
                 self.wander_min_seconds, self.wander_max_seconds
@@ -183,7 +185,7 @@ class EmberOverlay:
             root.report_callback_exception = recover_callback
 
             def tick() -> None:
-                nonlocal x, y, target, frame_index, photo, look_angle, next_wander_at
+                nonlocal x, y, target, target_kind, frame_index, photo, look_angle, look_until, next_wander_at
                 while True:
                     try:
                         command = self.commands.get_nowait()
@@ -209,6 +211,7 @@ class EmberOverlay:
                             focus_x,
                             focus_y,
                         )
+                        target_kind = "point"
 
                 if (
                     self.wander and target is None and animation == "idle"
@@ -222,6 +225,7 @@ class EmberOverlay:
                         destination_x + width // 2,
                         destination_y + height // 3,
                     )
+                    target_kind = "wander"
                     next_wander_at = time.monotonic() + random.uniform(
                         self.wander_min_seconds, self.wander_max_seconds
                     )
@@ -240,12 +244,18 @@ class EmberOverlay:
                     else:
                         x, y = target
                         root.geometry(f"{width}x{height}+{x}+{y}")
-                        look_angle = direction_degrees(
-                            target[2] - (x + width // 2),
-                            target[3] - (y + height // 2),
-                        )
+                        if target_kind == "point":
+                            look_angle = direction_degrees(
+                                target[2] - (x + width // 2),
+                                target[3] - (y + height // 2),
+                            )
+                            look_until = time.monotonic() + 3.5
+                        else:
+                            set_animation("idle")
                         target = None
-                        set_animation("idle")
+
+                if look_angle is not None and time.monotonic() >= look_until:
+                    set_animation("idle")
 
                 if look_angle is not None:
                     frame = self.atlas.look_frame(look_angle)
