@@ -3,9 +3,11 @@ import tempfile
 import threading
 from pathlib import Path
 
+from PIL import Image
+
 from dashboard_server import DashboardHub
 from ember import BodyState, EmbodimentController, SpriteAtlas, WorldState
-from ember.overlay import direction_degrees
+from ember.overlay import EmberOverlay, add_pose_inbetweens, direction_degrees
 from ember.telemetry import WowTelemetryAdapter
 
 
@@ -41,6 +43,21 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(direction_degrees(1, 0), 90)
         self.assertEqual(direction_degrees(0, 1), 180)
         self.assertEqual(direction_degrees(-1, 0), 270)
+
+    def test_pose_inbetweens_preserve_keyframes_and_add_blended_frames(self):
+        black = Image.new("RGBA", (1, 1), (0, 0, 0, 255))
+        white = Image.new("RGBA", (1, 1), (255, 255, 255, 255))
+
+        frames = add_pose_inbetweens([black, white], count=1, loop=False)
+
+        self.assertEqual(len(frames), 3)
+        self.assertEqual(frames[0].getpixel((0, 0)), (0, 0, 0, 255))
+        self.assertEqual(frames[1].getpixel((0, 0)), (127, 127, 127, 255))
+        self.assertEqual(frames[2].getpixel((0, 0)), (255, 255, 255, 255))
+
+    def test_added_frames_keep_original_animation_duration(self):
+        self.assertEqual(EmberOverlay._frame_interval("idle", 12), 180)
+        self.assertEqual(EmberOverlay._frame_interval("running-right", 16), 72)
 
     def test_embodiment_emits_animation_choreography(self):
         commands = []
