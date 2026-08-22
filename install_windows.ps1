@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipKokoro
+    [switch]$SkipKokoro,
+    [switch]$Portable
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,45 +21,39 @@ function Find-Python312 {
     foreach ($entry in $launchers) {
         try {
             $version = & $entry.File @($entry.Args) -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $version -eq "3.12") {
-                return $entry
-            }
+            if ($LASTEXITCODE -eq 0 -and $version -eq "3.12") { return $entry }
         } catch { }
     }
     return $null
 }
 
 Write-Host "Desktop Sophia Windows Installer" -ForegroundColor Magenta
-Write-Host "This installs Python environments and downloads all runtime dependencies."
+if ($Portable) {
+    Write-Host "Portable mode: runtime, memory, configuration, logs, and model cache stay with this folder."
+    Write-Host "Note: the host PC still needs Windows-compatible drivers/audio support; Python is only used to build the portable environments."
+    $env:HF_HOME = Join-Path $ProjectRoot ".cache\huggingface"
+    $env:XDG_CACHE_HOME = Join-Path $ProjectRoot ".cache"
+    New-Item -ItemType Directory -Force -Path $env:HF_HOME | Out-Null
+}
 
 $Python = Find-Python312
 if ($null -eq $Python) {
     Write-Step "Installing Python 3.12"
     $Winget = Get-Command winget -ErrorAction SilentlyContinue
-    if ($null -eq $Winget) {
-        throw "Python 3.12 is required and Winget is unavailable. Install Python 3.12 from python.org, then run this installer again."
-    }
+    if ($null -eq $Winget) { throw "Python 3.12 is required for setup and Winget is unavailable. Install Python 3.12, then run this installer again." }
     & winget install --id Python.Python.3.12 --exact --scope user --accept-package-agreements --accept-source-agreements --silent
-    if ($LASTEXITCODE -ne 0) {
-        throw "Winget could not install Python 3.12 (exit code $LASTEXITCODE)."
-    }
+    if ($LASTEXITCODE -ne 0) { throw "Winget could not install Python 3.12 (exit code $LASTEXITCODE)." }
     $Python = Find-Python312
-    if ($null -eq $Python) {
-        throw "Python installed, but its executable could not be found. Restart Windows and run setup_windows.bat again."
-    }
+    if ($null -eq $Python) { throw "Python installed, but its executable could not be found. Restart Windows and run setup_windows.bat again." }
 }
 
 function Invoke-Python312([string[]]$Arguments) {
     & $Python.File @($Python.Args) @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Python command failed with exit code $LASTEXITCODE."
-    }
+    if ($LASTEXITCODE -ne 0) { throw "Python command failed with exit code $LASTEXITCODE." }
 }
 
 Write-Step "Creating Sophia's application environment"
-if (-not (Test-Path -LiteralPath ".venv\Scripts\python.exe")) {
-    Invoke-Python312 @("-m", "venv", ".venv")
-}
+if (-not (Test-Path -LiteralPath ".venv\Scripts\python.exe")) { Invoke-Python312 @("-m", "venv", ".venv") }
 & ".venv\Scripts\python.exe" -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "Could not update pip in .venv." }
 & ".venv\Scripts\python.exe" -m pip install -r requirements.txt
@@ -66,9 +61,7 @@ if ($LASTEXITCODE -ne 0) { throw "Could not install Sophia's application depende
 
 if (-not $SkipKokoro) {
     Write-Step "Creating the local Kokoro voice environment"
-    if (-not (Test-Path -LiteralPath ".kokoro_venv\Scripts\python.exe")) {
-        Invoke-Python312 @("-m", "venv", ".kokoro_venv")
-    }
+    if (-not (Test-Path -LiteralPath ".kokoro_venv\Scripts\python.exe")) { Invoke-Python312 @("-m", "venv", ".kokoro_venv") }
     & ".kokoro_venv\Scripts\python.exe" -m pip install --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw "Could not update pip in .kokoro_venv." }
 
@@ -92,18 +85,18 @@ if (-not $SkipKokoro) {
 }
 
 Write-Step "Creating private local configuration"
-if (-not (Test-Path -LiteralPath ".env")) {
-    Copy-Item -LiteralPath ".env.example" -Destination ".env"
-}
-if (-not (Test-Path -LiteralPath "config.json")) {
-    Copy-Item -LiteralPath "config.example.json" -Destination "config.json"
-}
-if (-not (Test-Path -LiteralPath "youtube_library.json")) {
-    Set-Content -LiteralPath "youtube_library.json" -Value "[]" -Encoding UTF8
-}
+if (-not (Test-Path -LiteralPath ".env")) { Copy-Item -LiteralPath ".env.example" -Destination ".env" }
+if (-not (Test-Path -LiteralPath "config.json")) { Copy-Item -LiteralPath "config.example.json" -Destination "config.json" }
+if (-not (Test-Path -LiteralPath "youtube_library.json")) { Set-Content -LiteralPath "youtube_library.json" -Value "[]" -Encoding UTF8 }
 New-Item -ItemType Directory -Force -Path "soundboard\archive" | Out-Null
-if (-not (Test-Path -LiteralPath "soundboard\library.json")) {
-    Set-Content -LiteralPath "soundboard\library.json" -Value "{}" -Encoding UTF8
+if (-not (Test-Path -LiteralPath "soundboard\library.json")) { Set-Content -LiteralPath "soundboard\library.json" -Value "{}" -Encoding UTF8 }
+
+if ($Portable) {
+    $config = Get-Content -LiteralPath "config.json" -Raw | ConvertFrom-Json
+    $config | Add-Member -NotePropertyName portable_mode -NotePropertyValue $true -Force
+    $config.kokoro_python = ".kokoro_venv\Scripts\python.exe"
+    $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath "config.json" -Encoding UTF8
+    Set-Content -LiteralPath ".portable" -Value "Desktop Sophia portable installation" -Encoding UTF8
 }
 
 Write-Step "Checking the installation"
@@ -116,4 +109,5 @@ if (-not $SkipKokoro) {
 
 Write-Host ""
 Write-Host "Installation complete." -ForegroundColor Green
+if ($Portable) { Write-Host "Portable Sophia is ready. You can move this entire folder to a sufficiently large USB drive." -ForegroundColor Green }
 Write-Host "Open .env, add your OpenAI API key, then run run_sophia.bat."
