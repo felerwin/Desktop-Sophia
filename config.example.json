@@ -46,5 +46,7 @@
   "kokoro_speed": 1.0,
   "kokoro_python": ".kokoro_venv\\Scripts\\python.exe",
   "mic_device": null,
-  "portable_mode": true
+  "portable_mode": true,
+  "ember_overlay_enabled": true,
+  "ember_overlay_scale": 1.0
 }

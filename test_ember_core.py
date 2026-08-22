@@ -1,6 +1,8 @@
 import unittest
+from pathlib import Path
 
-from ember import WorldState
+from ember import SpriteAtlas, WorldState
+from ember.overlay import direction_degrees
 from ember.telemetry import WowTelemetryAdapter
 
 
@@ -24,6 +26,18 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(snapshot["game"], "World of Warcraft")
         self.assertEqual(snapshot["location"], "Eversong Woods")
         self.assertEqual(len(snapshot["recent_events"]), 1)
+
+    def test_overlay_atlas_exposes_animation_rows_and_look_directions(self):
+        atlas = SpriteAtlas(Path(__file__).parent / "ember" / "assets" / "spritesheet.webp")
+        self.assertEqual(len(atlas.frames("idle")), 6)
+        self.assertEqual(len(atlas.frames("running-right")), 8)
+        self.assertEqual(atlas.look_frame(270).size, (192, 208))
+
+    def test_screen_deltas_use_clockwise_up_zero_directions(self):
+        self.assertEqual(direction_degrees(0, -1), 0)
+        self.assertEqual(direction_degrees(1, 0), 90)
+        self.assertEqual(direction_degrees(0, 1), 180)
+        self.assertEqual(direction_degrees(-1, 0), 270)
 
 
 if __name__ == "__main__":

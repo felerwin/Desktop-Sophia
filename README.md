@@ -6,6 +6,10 @@ with Kokoro. She has a local dashboard, long-term memory, a soundboard, a saved
 YouTube shelf, optional Spotify controls, and experimental World of Warcraft
 telemetry.
 
+Ember also has an optional transparent, always-on-top, click-through animated body.
+It uses the bundled v2 pet atlas and reacts locally to listening, thinking, speaking,
+and emotional body states without additional model calls.
+
 The dashboard and companion data stay on the computer. OpenAI receives the
 screenshots, transcripts, and sound clips needed for enabled model features.
 
