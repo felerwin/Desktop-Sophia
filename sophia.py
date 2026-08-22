@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, EmberOverlay, WorldState
+from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, WorldState
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -86,11 +86,18 @@ Act like a friend watching a Discord gameplay stream:
 - Calibrate your language to confidence: state reliable telemetry directly; use
   "I think," "it looks like," or a question when the evidence is only visual.
 
-You must respond with EXACTLY one line, and nothing else, in one of these four forms:
+You must respond with EXACTLY one line, and nothing else, in one of these five forms:
 SAY: <what you want to say aloud>
 SILENT: <a very short internal observation>
 SOUND: <the exact id of one available soundboard clip>
 VIDEO: {"action":"play","id":"exact saved video id","seconds":23}
+POINT: {"x":0.72,"y":0.35,"label":"quest objective","say":"There—that one."}
+
+POINT gives your desktop body deliberate control. x and y are normalized screenshot
+coordinates from 0.0 at the top/left to 1.0 at the bottom/right. Use POINT only when
+you can identify a specific visible thing worth approaching or indicating. The optional
+say field is spoken aloud. Do not use POINT merely to wander or to indicate the player
+character by default.
 
 VIDEO also accepts {"action":"pause"}, {"action":"resume"}, {"action":"stop"},
 or {"action":"seek","seconds":23}. Use it when Tony directly asks to control
@@ -137,7 +144,19 @@ preamble, extra lines, markdown, or combined actions.
 # Matches SAY, SILENT, or SOUND (case-insensitive), allowing the message
 # body to contain its own colons/newlines. Anything that doesn't match this
 # shape is treated as malformed output rather than guessed at.
-OUTPUT_LINE_RE = re.compile(r"^\s*(SAY|SILENT|SOUND|VIDEO)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+OUTPUT_LINE_RE = re.compile(r"^\s*(SAY|SILENT|SOUND|VIDEO|POINT)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def parse_point_action(content):
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        raise ValueError("POINT payload must be an object")
+    target = ScreenTarget(
+        payload["x"], payload["y"],
+        str(payload.get("label") or "interesting thing")[:80],
+        float(payload.get("confidence", 1.0)),
+    )
+    return target, str(payload.get("say") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1254,7 +1273,7 @@ class StreamedSpeechParser:
     def feed(self, delta):
         self.raw += delta
         if self.kind is None:
-            match = re.match(r"^\s*(SAY|SILENT|SOUND|VIDEO)\s*:\s*", self.raw, re.IGNORECASE)
+            match = re.match(r"^\s*(SAY|SILENT|SOUND|VIDEO|POINT)\s*:\s*", self.raw, re.IGNORECASE)
             if not match:
                 return
             self.kind = match.group(1).upper()
@@ -1532,6 +1551,23 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
         log_event("VOICE_REPLY", heard=transcript, text=content,
                   api_call_count=_api_call_count)
         _last_companion_action_at = time.time()
+    elif kind == "POINT" and content:
+        try:
+            target, remark = parse_point_action(content)
+            if _embodiment is not None:
+                _embodiment.point_at(target, remark or None)
+            if remark:
+                queue_streamed_phrase(remark, 1)
+                mem["recent_utterances"].append({"time": stamp, "text": remark})
+                record_memory_turn("Sophia", remark)
+            log_event(
+                "BODY_POINT", heard=transcript, label=target.label,
+                x=target.x, y=target.y, text=remark,
+                api_call_count=_api_call_count,
+            )
+            _last_companion_action_at = time.time()
+        except Exception as exc:
+            log_event("BODY_ACTION_ERROR", requested=content, detail=str(exc))
     elif kind == "SOUND" and content:
         try:
             sound = _dashboard.play_sound(content, "sophia_direct")
@@ -1996,6 +2032,24 @@ waiting for Tony to ask.
                 mem["recent_utterances"].append({"time": stamp, "text": content})
                 record_memory_turn("Sophia", content)
                 log_event("SAY", text=content, api_call_count=_api_call_count)
+            elif kind == "POINT" and content:
+                try:
+                    target, remark = parse_point_action(content)
+                    if _embodiment is not None:
+                        _embodiment.point_at(target, remark or None)
+                    if remark and gap_ok:
+                        tts_worker.say(remark)
+                        last_spoken = now
+                        _last_companion_action_at = now
+                        mem["recent_utterances"].append({"time": stamp, "text": remark})
+                        record_memory_turn("Sophia", remark)
+                    log_event(
+                        "BODY_POINT", label=target.label, x=target.x, y=target.y,
+                        text=remark if gap_ok else "", api_call_count=_api_call_count,
+                    )
+                except Exception as exc:
+                    mem["recent_observations"].append({"time": stamp, "note": content})
+                    log_event("BODY_ACTION_ERROR", requested=content, detail=str(exc))
             elif kind == "SOUND" and content:
                 try:
                     sound = _dashboard.play_sound(content, "sophia_spontaneous")
