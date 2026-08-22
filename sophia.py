@@ -98,6 +98,8 @@ coordinates from 0.0 at the top/left to 1.0 at the bottom/right. Use POINT only 
 you can identify a specific visible thing worth approaching or indicating. The optional
 say field is spoken aloud. Do not use POINT merely to wander or to indicate the player
 character by default.
+When Tony explicitly says "look at," "do you see," "show me," or calls attention to a
+specific visible object, prefer POINT over SAY whenever you can locate that object.
 
 VIDEO also accepts {"action":"pause"}, {"action":"resume"}, {"action":"stop"},
 or {"action":"seek","seconds":23}. Use it when Tony directly asks to control
@@ -191,6 +193,26 @@ _shutdown_requested = threading.Event()
 def set_body_state(state, reason=None):
     if _embodiment is not None:
         _embodiment.set_state(state, reason)
+
+
+BODY_EVENT_STATES = {
+    "combat_start": BodyState.STARTLED,
+    "boss_start": BodyState.STARTLED,
+    "critical_health": BodyState.CONCERNED,
+    "player_death": BodyState.CONCERNED,
+    "boss_wipe": BodyState.CONCERNED,
+    "danger_recovered": BodyState.AMUSED,
+    "enemy_kill": BodyState.AMUSED,
+    "valuable_loot": BodyState.EXCITED,
+    "gear_upgrade": BodyState.EXCITED,
+    "level_up": BodyState.EXCITED,
+    "quest_complete": BodyState.EXCITED,
+    "boss_victory": BodyState.EXCITED,
+}
+
+
+def body_state_for_game_event(event_type):
+    return BODY_EVENT_STATES.get(str(event_type or ""))
 
 
 def log_event(event_name, **fields):
@@ -959,9 +981,14 @@ def handle_game_event(event):
                 confidence=1.0,
                 source=event.get("source", "game_event"),
             )
+    event_type = event.get("event_type")
+    body_state = body_state_for_game_event(event_type)
+    if body_state is not None:
+        set_body_state(body_state, f"game_event:{event_type}")
+        log_event("BODY_REACTION", event_type=event_type, state=body_state.value)
     log_event(
         "GAME_EVENT",
-        event_type=event.get("event_type"),
+        event_type=event_type,
         title=event.get("title"),
         priority=event.get("priority"),
         source=event.get("source"),
@@ -1477,6 +1504,8 @@ you may use SILENT.
 If Tony asks for a soundboard button, choose SOUND rather than promising to do it.
 If he asks whether the soundboard works, demonstrate it with SOUND.
 If he asks for a saved video or player control, choose VIDEO rather than describing it.
+If Tony explicitly asks you to look at or notice a specific visible thing, use POINT
+when you can locate it and put your spoken reply in POINT's say field.
 """
     model_started_at = time.perf_counter()
     queued_phrases = 0
