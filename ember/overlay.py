@@ -106,12 +106,10 @@ class EmberOverlay:
             from PIL import ImageTk
 
             root = tk.Tk()
-            root.withdraw()
+            root.title("Ember Body")
             root.overrideredirect(True)
-            root.attributes("-topmost", True)
             transparent = "#010203"
             root.configure(bg=transparent)
-            root.wm_attributes("-transparentcolor", transparent)
             width = int(CELL_WIDTH * self.scale)
             height = int(CELL_HEIGHT * self.scale)
             screen_width = root.winfo_screenwidth()
@@ -121,9 +119,10 @@ class EmberOverlay:
             root.geometry(f"{width}x{height}+{x}+{y}")
             label = tk.Label(root, bg=transparent, borderwidth=0, highlightthickness=0)
             label.pack(fill="both", expand=True)
-            root.update_idletasks()
+            root.update()
+            root.wm_attributes("-transparentcolor", transparent)
+            root.attributes("-topmost", True)
             self._make_click_through(root.winfo_id())
-            root.deiconify()
 
             animation = "idle"
             frame_index = 0
@@ -218,7 +217,9 @@ class EmberOverlay:
         if not hasattr(ctypes, "windll"):
             return
         user32 = ctypes.windll.user32
+        hwnd = user32.GetAncestor(hwnd, 2) or hwnd
         get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
         set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
         ex_style = get_style(hwnd, -20)
-        set_style(hwnd, -20, ex_style | 0x00080000 | 0x00000020 | 0x00000080 | 0x08000000)
+        set_style(hwnd, -20, ex_style | 0x00000020 | 0x00000080 | 0x08000000)
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
