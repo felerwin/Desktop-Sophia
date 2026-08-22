@@ -1619,6 +1619,9 @@ def main():
             _ember_overlay = EmberOverlay(
                 ROOT / "ember" / "assets" / "spritesheet.webp",
                 scale=float(CONFIG.get("ember_overlay_scale", 1.0)),
+                wander=bool(CONFIG.get("ember_wander_enabled", True)),
+                wander_min_seconds=float(CONFIG.get("ember_wander_min_seconds", 22)),
+                wander_max_seconds=float(CONFIG.get("ember_wander_max_seconds", 50)),
             )
             if not _ember_overlay.start():
                 raise RuntimeError(_ember_overlay.error or "overlay did not become ready")
