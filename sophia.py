@@ -167,6 +167,12 @@ def set_body_state(state, reason=None):
         _embodiment.set_state(state, reason)
 
 
+def test_body_sequence(states):
+    if _embodiment is None:
+        raise RuntimeError("Ember's body is not ready.")
+    _embodiment.perform([BodyState(state) for state in states], "dashboard_test")
+
+
 BODY_EVENT_SEQUENCES = {
     "combat_start": [BodyState.STARTLED],
     "boss_start": [BodyState.STARTLED, BodyState.CONCERNED],
@@ -1489,6 +1495,7 @@ def main():
     _dashboard = DashboardHub(ROOT, CONFIG, _shutdown_requested)
     _dashboard.set_context_services(_memory_store, _game_events)
     _dashboard.set_budget_handlers(budget_state, resume_autonomy_budget)
+    _dashboard.set_body_test_handler(test_body_sequence)
     import_existing_memory_history()
     try:
         _dashboard.start(

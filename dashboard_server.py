@@ -48,6 +48,7 @@ class DashboardHub:
         self.microphone_change_handler = None
         self.budget_state_provider = None
         self.budget_resume_handler = None
+        self.body_test_handler = None
         self.microphone_options = []
         self.state = {
             "phase": "starting",
@@ -76,6 +77,9 @@ class DashboardHub:
     def set_budget_handlers(self, state_provider, resume_handler):
         self.budget_state_provider = state_provider
         self.budget_resume_handler = resume_handler
+
+    def set_body_test_handler(self, handler):
+        self.body_test_handler = handler
 
     def resume_budget(self):
         if self.budget_resume_handler is None:
@@ -711,6 +715,24 @@ class DashboardHub:
             raise ValueError("Game event awareness is not ready.")
         return self.game_events.inject(event_type, title=title, source="dashboard_test")
 
+    def test_body(self, preset):
+        presets = {
+            "idle": ["idle"],
+            "wave": ["amused"],
+            "jump": ["excited"],
+            "worry": ["concerned"],
+            "startle": ["startled"],
+            "celebrate": ["excited", "amused", "excited"],
+            "meltdown": ["concerned", "startled", "concerned"],
+        }
+        states = presets.get(str(preset or ""))
+        if states is None:
+            raise ValueError("Unknown body test preset.")
+        if self.body_test_handler is None:
+            raise ValueError("Ember's body is not ready.")
+        self.body_test_handler(states)
+        return {"preset": preset, "states": states}
+
     def update_game_config(self, log_path, player_name):
         with self.lock:
             self.config["wow_combat_log_path"] = str(log_path or "").strip()
@@ -944,6 +966,9 @@ class DashboardHub:
                     elif path == "/api/game/event":
                         event = hub.inject_game_event(payload.get("event_type"), payload.get("title"))
                         self._json({"ok": True, "event": event})
+                    elif path == "/api/body/test":
+                        sequence = hub.test_body(payload.get("preset"))
+                        self._json({"ok": True, "sequence": sequence})
                     elif path == "/api/game/config":
                         settings = hub.update_game_config(
                             payload.get("log_path"), payload.get("player_name")

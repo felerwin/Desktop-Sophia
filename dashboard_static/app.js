@@ -395,6 +395,15 @@ document.querySelectorAll("[data-test-event]").forEach((button) => {
   });
 });
 
+document.querySelectorAll("[data-body-test]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    await fetch(`${apiBase}/api/body/test`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: button.dataset.bodyTest }),
+    });
+  });
+});
+
 $("youtubeForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const cue = parseCue($("youtubeStart").value);
