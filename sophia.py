@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import WorldState
+from ember import BodyState, EmbodimentController, EmberOverlay, WorldState
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -163,8 +163,15 @@ _memory_store = None
 _game_events = None
 _world_state = None
 _wow_adapter = None
+_ember_overlay = None
+_embodiment = None
 _session_id = None
 _shutdown_requested = threading.Event()
+
+
+def set_body_state(state, reason=None):
+    if _embodiment is not None:
+        _embodiment.set_state(state, reason)
 
 
 def log_event(event_name, **fields):
@@ -366,6 +373,7 @@ class TTSWorker:
             text = item["text"]
             timing = item.get("timing", {})
             _tts_speaking.set()
+            set_body_state(BodyState.SPEAKING, "kokoro_playback")
             if _dashboard is not None:
                 _dashboard.set_phase("speaking", "Speaking…")
             try:
@@ -409,6 +417,8 @@ class TTSWorker:
                     done.set()
                 if self._queue.empty() and _dashboard is not None:
                     _dashboard.set_phase("listening", "I’m listening.")
+                if self._queue.empty():
+                    set_body_state(BodyState.IDLE, "speech_complete")
 
         self._shutdown_worker()
 
@@ -1366,6 +1376,7 @@ def handle_spoken_turn(
     comment cooldown. We grab a fresh screenshot so questions can refer to
     whatever is currently on screen."""
     global _last_companion_action_at
+    set_body_state(BodyState.LISTENING, "direct_speech")
     transcript = turn["text"]
     timing = turn.get("timing", {})
     record_memory_turn("Tony", transcript)
@@ -1470,6 +1481,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
         "MODEL_ROUTED", role="companion", model=model,
         reasoning_effort=reasoning_effort, direct=True,
     )
+    set_body_state(BodyState.THINKING, "direct_response")
     raw_out, err, first_delta_at, usage_event_id = call_model_streaming(
         client,
         model,
@@ -1490,6 +1502,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
     if err:
         kind, detail = err
         log_event(kind, detail=detail, api_call_count=_api_call_count)
+        set_body_state(BodyState.IDLE, "response_error")
         return
 
     match = OUTPUT_LINE_RE.match(raw_out.strip()) if raw_out else None
@@ -1499,6 +1512,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
         )
         log_event("MALFORMED_OUTPUT", raw=(raw_out or "")[:300],
                   api_call_count=_api_call_count)
+        set_body_state(BodyState.IDLE, "malformed_response")
         return
 
     kind = match.group(1).upper()
@@ -1561,6 +1575,9 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
         log_event("VOICE_SILENT", heard=transcript, note=content,
                   api_call_count=_api_call_count)
 
+    if kind != "SAY":
+        set_body_state(BodyState.IDLE, "direct_turn_complete")
+
     mem["recent_observations"] = mem["recent_observations"][-30:]
     mem["recent_utterances"] = mem["recent_utterances"][-30:]
     save_memory(mem)
@@ -1569,7 +1586,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
 
 def main():
     global _spotify, _dashboard, _memory_store, _game_events, _session_id
-    global _world_state, _wow_adapter
+    global _world_state, _wow_adapter, _ember_overlay, _embodiment
     global _last_companion_action_at, _budget_warning_emitted, _budget_pause_emitted
     key = os.getenv("OPENAI_API_KEY")
     if not key:
@@ -1597,6 +1614,21 @@ def main():
     )
     _world_state = WorldState()
     _wow_adapter = WowTelemetryAdapter(_world_state)
+    if CONFIG.get("ember_overlay_enabled", True):
+        try:
+            _ember_overlay = EmberOverlay(
+                ROOT / "ember" / "assets" / "spritesheet.webp",
+                scale=float(CONFIG.get("ember_overlay_scale", 1.0)),
+            )
+            if not _ember_overlay.start():
+                raise RuntimeError(_ember_overlay.error or "overlay did not become ready")
+            _embodiment = EmbodimentController(_ember_overlay.submit)
+            set_body_state(BodyState.IDLE, "startup")
+            log_event("EMBER_OVERLAY_READY")
+        except Exception as exc:
+            _ember_overlay = None
+            _embodiment = None
+            log_event("EMBER_OVERLAY_ERROR", detail=str(exc))
     _dashboard = DashboardHub(ROOT, CONFIG, _shutdown_requested)
     _dashboard.set_context_services(_memory_store, _game_events)
     _dashboard.set_budget_handlers(budget_state, resume_autonomy_budget)
@@ -1900,6 +1932,7 @@ waiting for Tony to ask.
                 reasoning_effort=route["reasoning_effort"],
                 game_event=event_type, tool_turn=tool_turn,
             )
+            set_body_state(BodyState.THINKING, "screen_observation")
             raw_out, err, usage_event_id = call_model(
                 client, route["model"], prompt, img, request_timeout,
                 reasoning_effort=route["reasoning_effort"],
@@ -1909,6 +1942,7 @@ waiting for Tony to ask.
             if err:
                 kind, detail = err
                 log_event(kind, detail=detail, api_call_count=_api_call_count)
+                set_body_state(BodyState.IDLE, "observation_error")
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
                     handle_spoken_turn(
@@ -1926,6 +1960,7 @@ waiting for Tony to ask.
                 )
                 log_event("MALFORMED_OUTPUT", raw=(raw_out or "")[:300],
                            api_call_count=_api_call_count)
+                set_body_state(BodyState.IDLE, "malformed_observation")
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
                     handle_spoken_turn(
@@ -2003,6 +2038,9 @@ waiting for Tony to ask.
                 mem["recent_observations"].append({"time": stamp, "note": content})
                 log_event("SILENT", note=content, api_call_count=_api_call_count)
 
+            if kind != "SAY" or not gap_ok:
+                set_body_state(BodyState.IDLE, "observation_complete")
+
             if autonomous_tool_used:
                 autonomous_non_tool_streak = 0
             else:
@@ -2046,6 +2084,8 @@ waiting for Tony to ask.
         if soundboard_worker is not None:
             soundboard_worker.stop()
         tts_worker.stop()
+        if _ember_overlay is not None:
+            _ember_overlay.stop()
         if _dashboard is not None:
             _dashboard.stop()
         if _memory_store is not None:
