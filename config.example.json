@@ -48,5 +48,8 @@
   "mic_device": null,
   "portable_mode": true,
   "ember_overlay_enabled": true,
-  "ember_overlay_scale": 1.0
+  "ember_overlay_scale": 1.0,
+  "ember_wander_enabled": true,
+  "ember_wander_min_seconds": 22,
+  "ember_wander_max_seconds": 50
 }

@@ -4,7 +4,9 @@ from __future__ import annotations
 import ctypes
 import math
 import queue
+import random
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,18 @@ FRAME_COUNTS = {
     "look-row-10": 8,
 }
 ROW_INDEX = {name: index for index, name in enumerate(FRAME_COUNTS)}
+FRAME_INTERVAL_MS = {
+    "idle": 360,
+    "running-right": 145,
+    "running-left": 145,
+    "waving": 240,
+    "jumping": 170,
+    "failed": 280,
+    "waiting": 340,
+    "running": 260,
+    "review": 320,
+}
+ONE_SHOT_ANIMATIONS = {"waving", "jumping", "failed"}
 
 
 class SpriteAtlas:
@@ -64,7 +78,7 @@ class EmberOverlay:
         "idle": "idle",
         "listening": "waiting",
         "thinking": "running",
-        "speaking": "review",
+        "speaking": "idle",
         "amused": "waving",
         "excited": "jumping",
         "concerned": "failed",
@@ -73,9 +87,16 @@ class EmberOverlay:
         "moving": "running-right",
     }
 
-    def __init__(self, atlas_path: str | Path, scale: float = 1.0):
+    def __init__(
+        self, atlas_path: str | Path, scale: float = 1.0,
+        wander: bool = True, wander_min_seconds: float = 22.0,
+        wander_max_seconds: float = 50.0,
+    ):
         self.atlas = SpriteAtlas(atlas_path)
         self.scale = max(0.5, min(2.0, float(scale)))
+        self.wander = bool(wander)
+        self.wander_min_seconds = max(8.0, float(wander_min_seconds))
+        self.wander_max_seconds = max(self.wander_min_seconds, float(wander_max_seconds))
         self.commands: queue.Queue[dict[str, Any]] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -130,16 +151,21 @@ class EmberOverlay:
             photo = None
             target: tuple[int, int, int, int] | None = None
             look_angle: float | None = None
+            one_shot = False
+            next_wander_at = time.monotonic() + random.uniform(
+                self.wander_min_seconds, self.wander_max_seconds
+            )
 
             def set_animation(name: str) -> None:
-                nonlocal animation, frame_index, frames, look_angle
+                nonlocal animation, frame_index, frames, look_angle, one_shot
                 animation = name if name in FRAME_COUNTS else "idle"
                 frame_index = 0
                 look_angle = None
+                one_shot = animation in ONE_SHOT_ANIMATIONS
                 frames = self._scaled_frames(animation)
 
             def tick() -> None:
-                nonlocal x, y, target, frame_index, photo, look_angle
+                nonlocal x, y, target, frame_index, photo, look_angle, next_wander_at
                 while True:
                     try:
                         command = self.commands.get_nowait()
@@ -150,7 +176,9 @@ class EmberOverlay:
                         root.destroy()
                         return
                     if action == "state":
-                        set_animation(self.STATE_ANIMATIONS.get(str(command.get("state")), "idle"))
+                        desired = self.STATE_ANIMATIONS.get(str(command.get("state")), "idle")
+                        if desired != animation:
+                            set_animation(desired)
                     elif action == "point_at":
                         raw = command.get("target") or {}
                         focus_x = int(float(raw.get("x", 0.5)) * screen_width)
@@ -163,6 +191,22 @@ class EmberOverlay:
                             focus_x,
                             focus_y,
                         )
+
+                if (
+                    self.wander and target is None and animation == "idle"
+                    and time.monotonic() >= next_wander_at
+                ):
+                    destination_x = random.randint(24, max(24, screen_width - width - 24))
+                    destination_y = max(0, screen_height - height - 72)
+                    target = (
+                        destination_x,
+                        destination_y,
+                        destination_x + width // 2,
+                        destination_y + height // 3,
+                    )
+                    next_wander_at = time.monotonic() + random.uniform(
+                        self.wander_min_seconds, self.wander_max_seconds
+                    )
 
                 if target:
                     dx, dy = target[0] - x, target[1] - y
@@ -183,7 +227,7 @@ class EmberOverlay:
                             target[3] - (y + height // 2),
                         )
                         target = None
-                        animation = "pointing"
+                        set_animation("idle")
 
                 if look_angle is not None:
                     frame = self.atlas.look_frame(look_angle)
@@ -192,9 +236,11 @@ class EmberOverlay:
                 else:
                     frame = frames[frame_index % len(frames)]
                     frame_index += 1
+                    if one_shot and frame_index >= len(frames):
+                        set_animation("idle")
                 photo = ImageTk.PhotoImage(frame)
                 label.configure(image=photo)
-                root.after(110, tick)
+                root.after(FRAME_INTERVAL_MS.get(animation, 280), tick)
 
             self._ready.set()
             tick()
