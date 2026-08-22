@@ -1,6 +1,6 @@
-# Desktop Sophia
+# Desktop Ember
 
-Desktop Sophia is a Windows gaming companion that can watch the selected screen,
+Desktop Ember is a Windows gaming companion that can watch the selected screen,
 listen through a microphone, converse through an OpenAI model, and speak locally
 with Kokoro. She has a local dashboard, long-term memory, a soundboard, a saved
 YouTube shelf, optional Spotify controls, and experimental World of Warcraft
@@ -16,10 +16,17 @@ screenshots, transcripts, and sound clips needed for enabled model features.
 3. Let the installer download Python 3.12 and the required application, audio,
    PyTorch, and Kokoro packages. The initial installation can take a while.
 4. Add an OpenAI API key to the `.env` file that opens when setup finishes.
-5. Double-click `run_sophia.bat`.
+5. Double-click `run_ember.bat`.
 
 The installer is idempotent: running it again repairs or updates the local
 environments without replacing personal configuration or memory.
+
+## Safe updates
+
+After the first GitHub installation, double-click `update_ember.bat` to update the
+program and refresh its dependencies. The updater only accepts a safe fast-forward
+from the official `main` branch. It stops if program files have local edits, and it
+does not replace `.env`, `config.json`, memory, logs, caches, or Python environments.
 
 ### Requirements
 
@@ -44,13 +51,42 @@ spontaneous remarks, soundboard, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
 
+Sophia uses a hybrid model route. Terra handles direct conversation, open-ended
+screen understanding, and reliable game events with low reasoning effort. Luna
+handles routine soundboard and video-only decisions at no reasoning effort. Set
+`OPENAI_COMPANION_MODEL` and `OPENAI_ROUTER_MODEL` in `.env` to change either
+role independently.
+
+### Cost governor
+
+The dashboard shows both the raw session estimate and a safety-adjusted guarded
+amount. OpenAI usage is written to the local SQLite ledger as soon as a response
+returns, before Sophia parses, filters, or rejects its content. A malformed model
+reply or rejected transcription therefore still counts toward the total.
+
+At the configured ceiling, only autonomous screen and game-reaction calls pause;
+direct microphone conversation remains available. The dashboard can resume
+autonomy for the rest of the current session. Daily totals are calculated from
+the same usage-event ledger rather than maintained as a second counter.
+
+These values are estimates, not an OpenAI invoice. The default 1.25 safety
+multiplier leaves room for estimation drift, and should be reconciled against the
+OpenAI usage dashboard periodically. Limits and the multiplier live in
+`config.json` under `autonomy_budget_*` and `cost_safety_multiplier`.
+
 ## Optional integrations
 
 ### Soundboard
 
 Add MP3 or WAV clips from the dashboard. Clips and their generated descriptions
 remain local and are deliberately excluded from Git. Sophia can press understood
-buttons autonomously when the moment fits.
+buttons autonomously when the moment fits. Use the pencil beside a clip to correct
+what it contains and when it belongs. Spoken corrections such as “metal pipe is
+metal pipes falling over” are also saved immediately and override audio analysis.
+
+The microphone listener requests English transcription confidence and rejects
+low-confidence, non-English-script, and extremely short ambient fragments. Rejected
+audio is recorded as `TRANSCRIPT_REJECTED` in the session log for tuning.
 
 ### YouTube
 
@@ -76,6 +112,18 @@ folder and enable the addon. Its visible pixel bridge gives Sophia read-only
 state, target, equipment, loot, and zone data. Combat-log events can additionally
 be configured from the dashboard.
 
+Game Sense keeps a short temporal model over those signals. It recognizes stable
+activity changes, combat boundaries, minimum health during a fight, danger and
+recovery, probable hard-fought victories, zone changes, and equipment upgrades.
+The decoder accepts fractionally scaled grids from maximized or GPU-scaled game
+windows. Bridge transitions are written as `PIXEL_BRIDGE_STATUS`; only `live`
+status exposes exact grid values to Sophia, preventing stale or screenshot-derived
+details from being described as addon telemetry.
+Dashboard events identify both their evidence source and confidence. Exact addon
+values are labeled `telemetry`; conclusions formed across several exact states are
+labeled `telemetry_derived`; screenshot-only interpretations remain visual
+inferences and must not be presented as addon facts.
+
 ## Local and private files
 
 The repository intentionally does not include:
@@ -93,8 +141,8 @@ installation.
 ## Development checks
 
 ```powershell
-.venv\Scripts\python.exe -m unittest test_spotify_control.py
-.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py spotify_control.py wow_pixel_bridge.py
+.venv\Scripts\python.exe -m unittest test_game_events.py test_reliability.py test_spotify_control.py test_usage_costs.py test_behavior_fixtures.py test_model_routing.py
+.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py model_routing.py speech_filter.py spotify_control.py usage_costs.py wow_pixel_bridge.py
 cd dashboard
 npm install
 npm test

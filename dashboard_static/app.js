@@ -46,7 +46,7 @@ function renderMessages(messages) {
 }
 
 function renderSounds(sounds) {
-  const signature = sounds.map((sound) => `${sound.id}:${sound.bytes}:${sound.status}:${sound.description}:${sound.use_when}`).join("|");
+  const signature = sounds.map((sound) => `${sound.id}:${sound.bytes}:${sound.status}:${sound.description}:${sound.use_when}:${sound.description_source}`).join("|");
   if (signature === soundSignature) return;
   soundSignature = signature;
   if (!sounds.length) {
@@ -54,7 +54,7 @@ function renderSounds(sounds) {
     return;
   }
   $("soundGrid").innerHTML = sounds.map((sound, index) =>
-    `<div class="soundTile"><button class="soundPlay" data-sound="${encodeURIComponent(sound.id)}" data-name="${escapeHtml(sound.name)}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(sound.name)}</strong><small>${escapeHtml(sound.description || "Waiting for analysis")}</small><em>${(sound.bytes / 1024 / 1024).toFixed(1)} MB · ${escapeHtml(sound.status)}${sound.affinity ? ` · affinity ${Number(sound.affinity).toFixed(1)}` : ""}</em></button><button class="soundRemove" data-remove="${encodeURIComponent(sound.id)}" aria-label="Remove ${escapeHtml(sound.name)}">×</button></div>`
+    `<div class="soundTile"><button class="soundPlay" data-sound="${encodeURIComponent(sound.id)}" data-name="${escapeHtml(sound.name)}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(sound.name)}</strong><small>${escapeHtml(sound.description || "Waiting for analysis")}</small><em>${(sound.bytes / 1024 / 1024).toFixed(1)} MB · ${escapeHtml(sound.status)}${sound.description_source?.startsWith("user") ? " · Tony corrected" : ""}${sound.affinity ? ` · affinity ${Number(sound.affinity).toFixed(1)}` : ""}</em></button><button class="soundEdit" data-edit="${encodeURIComponent(sound.id)}" data-description="${encodeURIComponent(sound.description || "")}" data-use-when="${encodeURIComponent(sound.use_when || "")}" aria-label="Correct ${escapeHtml(sound.name)} description">✎</button><button class="soundRemove" data-remove="${encodeURIComponent(sound.id)}" aria-label="Remove ${escapeHtml(sound.name)}">×</button></div>`
   ).join("");
 }
 
@@ -202,6 +202,12 @@ function renderGameEvents(game) {
   $("wowTargetMeta").textContent = telemetry.status === "live"
     ? `${live.combat ? "In combat" : "Out of combat"} · ${live.zone || "zone pending"}`
     : "Pixel bridge searching";
+  const activity = game.activity || {};
+  const activityName = String(activity.name || "unknown").replaceAll("_", " ");
+  $("wowActivity").textContent = activityName.charAt(0).toUpperCase() + activityName.slice(1);
+  $("wowActivityMeta").textContent = activity.name && activity.name !== "unknown"
+    ? `${Number(activity.seconds || 0).toFixed(0)}s · ${activity.evidence || "telemetry"} · ${Math.round(Number(activity.confidence || 0) * 100)}%`
+    : "Waiting for a stable state";
   const gear = telemetry.gear || [];
   $("wowGear").innerHTML = gear.some((item) => item.item_id) ? gear.filter((item) => item.item_id).map((item) =>
     `<div class="wowGearItem quality-${Math.min(4, Number(item.quality || 0))}"><span>${String(item.slot).padStart(2, "0")}</span><strong>${escapeHtml(item.name || `Item ${item.item_id}`)}</strong><small>iLvl ${item.item_level || "?"}</small></div>`
@@ -216,7 +222,7 @@ function renderGameEvents(game) {
   if (signature === eventSignature) return;
   eventSignature = signature;
   $("eventList").innerHTML = events.length ? events.map((event) =>
-    `<div class="eventItem"><span>${escapeHtml(event.event_type)}</span><strong>${escapeHtml(event.title)}</strong><time>${escapeHtml(event.time || "now")}</time></div>`
+    `<div class="eventItem"><span>${escapeHtml(event.event_type)}</span><div><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.evidence || event.source || "local signal")} · ${Math.round(Number(event.confidence || 0) * 100)}%</small></div><time>${escapeHtml(event.time || "now")}</time></div>`
   ).join("") : '<div class="soundEmpty"><strong>No game events yet</strong><span>WoW combat-log events will appear here.</span></div>';
 }
 
@@ -231,7 +237,18 @@ function render(state) {
   $("endpointWait").textContent = seconds(state.endpoint_wait);
   $("sttTime").textContent = state.stt_seconds ? `STT ${seconds(state.stt_seconds)}` : "STT awaiting speech";
   $("sessionCost").textContent = `$${Number(state.session_cost || 0).toFixed(4)}`;
-  $("apiCalls").textContent = `${state.api_calls || 0} Luna calls`;
+  const budget = state.budget || {};
+  const daily = budget.daily || {};
+  const governed = Number(budget.governed_cost_usd ?? state.session_governed_cost ?? 0);
+  $("apiCalls").textContent = `$${governed.toFixed(4)} guarded · ${state.api_calls || 0} calls`;
+  const budgetStatus = budget.paused ? "Autonomy paused at its limit" :
+    budget.override ? "Autonomy resumed for this session" :
+    budget.warning ? "Autonomy budget is getting close" : "Autonomy budget healthy";
+  $("budgetState").textContent = budgetStatus;
+  $("budgetDetail").textContent = `$${governed.toFixed(4)} guarded this session · $${Number(daily.governed_cost || 0).toFixed(4)} today · $${Number(budget.ceiling_usd || 0).toFixed(2)} limit`;
+  $("budgetControl").classList.toggle("warning", Boolean(budget.warning && !budget.paused));
+  $("budgetControl").classList.toggle("paused", Boolean(budget.paused));
+  $("resumeBudget").hidden = !budget.paused;
   $("hearingText").textContent = state.phase === "listening" ? "Listening for Tony…" : state.phase_label;
   $("diagnosticState").textContent = "Connected";
   $("diagnosticLog").textContent = state.logs.slice(0, 12).map((row) => `[${row.event}] ${row.text}`).join("\n") || "All systems quiet.";
@@ -361,6 +378,33 @@ $("soundGrid").addEventListener("click", async (event) => {
   const play = event.target.closest("[data-sound]");
   if (play) {
     playSound(play.dataset.sound, play.dataset.name);
+    return;
+  }
+  const edit = event.target.closest("[data-edit]");
+  if (edit) {
+    const description = window.prompt(
+      "What does this clip actually sound like?",
+      decodeURIComponent(edit.dataset.description || ""),
+    );
+    if (description == null || !description.trim()) return;
+    const useWhen = window.prompt(
+      "When should Sophia use it?",
+      decodeURIComponent(edit.dataset.useWhen || ""),
+    );
+    if (useWhen == null) return;
+    const response = await fetch(`${apiBase}/api/sound/describe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: decodeURIComponent(edit.dataset.edit),
+        description: description.trim(),
+        use_when: useWhen.trim(),
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    $("soundStatus").textContent = response.ok ? "Sophia updated her notes" : (result.error || "Couldn’t update that clip");
+    soundSignature = "";
+    refresh();
     return;
   }
   const remove = event.target.closest("[data-remove]");
@@ -531,6 +575,11 @@ $("youtubeVolume").addEventListener("input", (event) => {
 $("sleepButton").addEventListener("click", async () => {
   if (!window.confirm("Put Sophia to sleep?")) return;
   await fetch(`${apiBase}/api/sleep`, { method: "POST" });
+});
+
+$("resumeBudget").addEventListener("click", async () => {
+  await fetch(`${apiBase}/api/budget/resume`, { method: "POST" });
+  refresh();
 });
 
 $("clearTranscript").addEventListener("click", async () => {

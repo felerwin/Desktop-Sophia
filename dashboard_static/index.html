@@ -20,9 +20,9 @@
     </section>
     <section class="metricGrid">
       <article><span>First audio</span><strong id="firstAudio">—</strong><small>Speech end to playback</small></article>
-      <article><span>Model first text</span><strong id="firstText">—</strong><small>Luna · none</small></article>
+      <article><span>Model first text</span><strong id="firstText">—</strong><small>Terra + Luna · hybrid</small></article>
       <article><span>Speech endpoint</span><strong id="endpointWait">—</strong><small id="sttTime">STT awaiting speech</small></article>
-      <article><span>Session cost</span><strong id="sessionCost">$0.0000</strong><small id="apiCalls">Luna usage</small></article>
+      <article><span>Session cost</span><strong id="sessionCost">$0.0000</strong><small id="apiCalls">Hybrid usage</small></article>
     </section>
     <section class="panel mediaBay" id="the-tube">
       <div class="panelHeader"><div><p class="eyebrow">THE TUBE</p><h3>YouTube player</h3></div><small id="youtubeStatus">Player warming up…</small></div>
@@ -61,6 +61,7 @@
           <div class="panelHeader"><div><p class="eyebrow">BEHAVIOR</p><h3>Autonomy</h3></div></div>
           <div class="deviceControl"><label for="voiceSelector"><span><strong>Sophia’s voice</strong><small>Changes live after the current sentence</small></span></label><select id="voiceSelector" aria-label="Sophia’s voice"><option>Loading voices…</option></select></div>
           <div class="deviceControl"><label for="microphoneSelector"><span><strong>Input microphone</strong><small>Reconnects the listener live</small></span></label><select id="microphoneSelector" aria-label="Input microphone"><option>Loading microphones…</option></select></div>
+          <div class="budgetControl" id="budgetControl"><span><strong id="budgetState">Autonomy budget ready</strong><small id="budgetDetail">Session estimate is starting…</small></span><button id="resumeBudget" type="button" hidden>Resume this session</button></div>
           <label><span><strong>Speak aloud</strong><small>Local Kokoro voice</small></span><input data-control="speak_out_loud" type="checkbox"></label>
           <label><span><strong>Screen awareness</strong><small>Notice meaningful changes</small></span><input data-control="screen_awareness" type="checkbox"></label>
           <label><span><strong>Spontaneous remarks</strong><small>Respect the quiet-time rules</small></span><input data-control="spontaneous_remarks" type="checkbox"></label>
@@ -102,6 +103,7 @@
             <div><span>Health</span><strong id="wowHealth">—</strong><i><b id="wowHealthBar"></b></i></div>
             <div><span>Power</span><strong id="wowPower">—</strong><i><b id="wowPowerBar"></b></i></div>
             <div><span>Target</span><strong id="wowTarget">No live signal</strong><small id="wowTargetMeta">Pixel bridge searching</small></div>
+            <div><span>Activity</span><strong id="wowActivity">Unknown</strong><small id="wowActivityMeta">Waiting for a stable state</small></div>
           </div>
           <div class="wowGear" id="wowGear"><div class="soundEmpty"><strong>Waiting for equipment</strong><span>The live bridge will transmit equipped items after login.</span></div></div>
           <form id="gameConfigForm" class="gameConfigForm"><input id="wowLogPath" placeholder="WoWCombatLog.txt path · auto-detect by default"><input id="wowPlayerName" placeholder="Character name · improves death detection"><button type="submit">Save</button></form>
