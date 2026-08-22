@@ -22,17 +22,9 @@ VOICE_OPTIONS = [
     {"name": "Lily", "voice": "bf_lily", "language": "b"},
 ]
 
-SOUNDBOARD_EXTENSIONS = {".mp3", ".wav"}
-MAX_SOUND_BYTES = 12 * 1024 * 1024
-
-
 class DashboardHub:
     def __init__(self, root, config, shutdown_event):
         self.root = Path(root)
-        self.soundboard_root = self.root / "soundboard"
-        self.soundboard_archive = self.soundboard_root / "archive"
-        self.soundboard_archive.mkdir(parents=True, exist_ok=True)
-        self.soundboard_library_path = self.soundboard_root / "library.json"
         self.youtube_library_path = self.root / "youtube_library.json"
         self.config = config
         self.shutdown_event = shutdown_event
@@ -40,7 +32,6 @@ class DashboardHub:
         self.lock = threading.Lock()
         self.messages = deque(maxlen=80)
         self.logs = deque(maxlen=120)
-        self.sound_history = deque(maxlen=40)
         self.youtube_history = deque(maxlen=30)
         self.youtube_command_seq = 0
         self.youtube_command_payload = None
@@ -58,10 +49,6 @@ class DashboardHub:
         self.budget_state_provider = None
         self.budget_resume_handler = None
         self.microphone_options = []
-        self.sound_analyzer = None
-        self.sound_play_handler = None
-        self.sound_stop_handler = None
-        self.sound_analysis_lock = threading.Lock()
         self.state = {
             "phase": "starting",
             "phase_label": "Starting up",
@@ -75,7 +62,6 @@ class DashboardHub:
             "first_text": None,
             "endpoint_wait": None,
             "stt_seconds": None,
-            "soundboard_now_playing": None,
         }
 
     def set_phase(self, phase, label=None):
@@ -150,10 +136,6 @@ class DashboardHub:
                 self.state["session_governed_cost"] = fields.get(
                     "session_governed_cost_usd", self.state["session_governed_cost"]
                 )
-            elif event_type == "SOUNDBOARD_AUDIO_START":
-                self.state["soundboard_now_playing"] = fields.get("name")
-            elif event_type in {"SOUNDBOARD_AUDIO_DONE", "SOUNDBOARD_STOPPED"}:
-                self.state["soundboard_now_playing"] = None
             elif event_type == "SESSION_END":
                 self.state["phase"] = "sleeping"
                 self.state["phase_label"] = "Asleep"
@@ -171,7 +153,6 @@ class DashboardHub:
                 "screen_awareness": bool(self.config.get("screen_awareness", True)),
                 "spontaneous_remarks": bool(self.config.get("spontaneous_remarks", True)),
                 "music_autonomy": bool(self.config.get("music_autonomy", False)),
-                "soundboard_autonomy": bool(self.config.get("soundboard_autonomy", True)),
                 "long_term_memory": bool(self.config.get("long_term_memory", True)),
                 "game_event_awareness": bool(self.config.get("game_event_awareness", True)),
             }
@@ -184,7 +165,6 @@ class DashboardHub:
                 "selected_voice": self.config.get("kokoro_voice", "af_bella"),
                 "microphone_options": self.microphone_options,
                 "selected_microphone": self.config.get("mic_device"),
-                "sounds": self.list_sounds(),
                 "youtube": {
                     **self.youtube_state,
                     "command_seq": self.youtube_command_seq,
@@ -699,14 +679,11 @@ class DashboardHub:
         return dict(self.youtube_state)
 
     def observe_media_feedback(self, text):
-        corrections = self.observe_sound_corrections(text)
         if self.memory_store is None or self.last_media_action is None:
-            return {"corrections": corrections} if corrections else None
+            return None
         action = dict(self.last_media_action)
         action["age_seconds"] = max(0, time.time() - action["time"])
         feedback = self.memory_store.observe_media_feedback(text, action)
-        if corrections:
-            return {**(feedback or {}), "corrections": corrections}
         return feedback
 
     def add_memory(self, payload):
@@ -851,7 +828,6 @@ class DashboardHub:
             "screen_awareness",
             "spontaneous_remarks",
             "music_autonomy",
-            "soundboard_autonomy",
             "long_term_memory",
             "game_event_awareness",
         }
@@ -902,11 +878,6 @@ class DashboardHub:
                     return
                 if path == "/styles.css":
                     file_path = stylesheet_path
-                elif path.startswith("/soundboard/"):
-                    file_path = (hub.soundboard_root / unquote(path.removeprefix("/soundboard/"))).resolve()
-                    if file_path.parent != hub.soundboard_root.resolve():
-                        self._json({"error": "Not found"}, 404)
-                        return
                 elif path in {"/", "/index.html"}:
                     file_path = dashboard_root / "index.html"
                 else:
@@ -928,7 +899,7 @@ class DashboardHub:
                     return
                 path = urlparse(self.path).path
                 length = int(self.headers.get("Content-Length", "0"))
-                request_limit = MAX_SOUND_BYTES * 2 if path == "/api/sound/upload" else 4096
+                request_limit = 4096
                 if length > request_limit:
                     self._json({"error": "Request too large"}, 413)
                     return
@@ -943,24 +914,6 @@ class DashboardHub:
                     elif path == "/api/microphone":
                         microphone = hub.update_microphone(payload.get("device"))
                         self._json({"ok": True, "microphone": microphone})
-                    elif path == "/api/sound/upload":
-                        sound = hub.add_sound(payload.get("name"), payload.get("data", ""))
-                        self._json({"ok": True, "sound": sound})
-                    elif path == "/api/sound/archive":
-                        hub.archive_sound(payload.get("id"))
-                        self._json({"ok": True})
-                    elif path == "/api/sound/play":
-                        sound = hub.play_sound(payload.get("id"), "dashboard", payload.get("volume"))
-                        self._json({"ok": True, "sound": sound})
-                    elif path == "/api/sound/describe":
-                        sound = hub.correct_sound_metadata(
-                            payload.get("id"), payload.get("description"),
-                            payload.get("use_when"), payload.get("transcript"),
-                        )
-                        self._json({"ok": True, "sound": sound})
-                    elif path == "/api/sound/stop":
-                        hub.stop_sound()
-                        self._json({"ok": True})
                     elif path == "/api/youtube/add":
                         video = hub.add_youtube_video(
                             payload.get("url"), payload.get("title"), payload.get("use_when"),

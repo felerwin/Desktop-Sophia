@@ -78,14 +78,7 @@ export default function Home() {
             <label><span><strong>Spontaneous remarks</strong><small>Respect the quiet-time rules</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Long-term memory</strong><small>Recall relevant facts across sessions</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Game-event awareness</strong><small>React to reliable local game signals</small></span><input type="checkbox" defaultChecked /></label>
-            <label><span><strong>Soundboard autonomy</strong><small>Sophia may press any understood button</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Video autonomy</strong><small>Sophia may use videos from her saved shelf</small></span><input type="checkbox" defaultChecked /></label>
-          </article>
-
-          <article className="panel soundboard">
-            <div className="panelHeader"><div><p className="eyebrow">SOPHIA’S SOUNDBOARD</p><h3>Meme clips</h3></div><button className="addSoundButton" type="button">+ Add clips</button></div>
-            <div className="soundGrid"><div className="soundTile"><button className="soundPlay"><span>01</span><strong>Vine boom</strong><small>Deep dramatic impact</small><em>0.2 MB · ready</em></button><button className="soundRemove" aria-label="Remove Vine boom">×</button></div><div className="soundTile"><button className="soundPlay"><span>02</span><strong>Sad trombone</strong><small>Comedic failure sting</small><em>0.4 MB · ready</em></button><button className="soundRemove" aria-label="Remove Sad trombone">×</button></div><div className="soundTile"><button className="soundPlay"><span>03</span><strong>Air horn</strong><small>Loud celebration blast</small><em>0.3 MB · ready</em></button><button className="soundRemove" aria-label="Remove Air horn">×</button></div></div>
-            <div className="soundControls"><button type="button">■ Stop</button><label htmlFor="soundVolume">Volume</label><input id="soundVolume" type="range" min="0" max="1" step="0.05" defaultValue="0.8" /><small>Ready</small></div>
           </article>
 
           <details className="panel diagnostics">

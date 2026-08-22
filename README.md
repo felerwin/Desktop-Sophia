@@ -2,7 +2,7 @@
 
 Desktop Ember is a Windows gaming companion that can watch the selected screen,
 listen through a microphone, converse through an OpenAI model, and speak locally
-with Kokoro. She has a local dashboard, long-term memory, a soundboard, a saved
+with Kokoro. She has a local dashboard, long-term memory, a saved
 YouTube shelf, optional Spotify controls, and experimental World of Warcraft
 telemetry.
 
@@ -11,7 +11,7 @@ It uses the bundled v2 pet atlas and reacts locally to listening, thinking, spea
 and emotional body states without additional model calls.
 
 The dashboard and companion data stay on the computer. OpenAI receives the
-screenshots, transcripts, and sound clips needed for enabled model features.
+screenshots and transcripts needed for enabled model features.
 
 ## Quick installation
 
@@ -51,13 +51,13 @@ Starting Sophia opens a private local dashboard at:
 `http://127.0.0.1:8766/`
 
 The dashboard controls the microphone, Kokoro voice, screen awareness,
-spontaneous remarks, soundboard, YouTube shelf, memories, personality, and game
+spontaneous remarks, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
 
 Sophia uses a hybrid model route. Terra handles direct conversation, open-ended
 screen understanding, and reliable game events with low reasoning effort. Luna
-handles routine soundboard and video-only decisions at no reasoning effort. Set
+handles routine video-only decisions at no reasoning effort. Set
 `OPENAI_COMPANION_MODEL` and `OPENAI_ROUTER_MODEL` in `.env` to change either
 role independently.
 
@@ -79,14 +79,6 @@ OpenAI usage dashboard periodically. Limits and the multiplier live in
 `config.json` under `autonomy_budget_*` and `cost_safety_multiplier`.
 
 ## Optional integrations
-
-### Soundboard
-
-Add MP3 or WAV clips from the dashboard. Clips and their generated descriptions
-remain local and are deliberately excluded from Git. Sophia can press understood
-buttons autonomously when the moment fits. Use the pencil beside a clip to correct
-what it contains and when it belongs. Spoken corrections such as “metal pipe is
-metal pipes falling over” are also saved immediately and override audio analysis.
 
 The microphone listener requests English transcription confidence and rejects
 low-confidence, non-English-script, and extremely short ambient fragments. Rejected
@@ -135,7 +127,6 @@ The repository intentionally does not include:
 - `.env` or Spotify authorization tokens
 - `config.json`, which may contain device names and local game paths
 - conversation logs, memories, and the SQLite memory database
-- the personal soundboard and its analyzed library
 - the personal YouTube shelf
 - Python environments and generated frontend output
 

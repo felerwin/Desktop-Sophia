@@ -1,11 +1,8 @@
 import io
-import json
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 
-from dashboard_server import DashboardHub
 from game_events import GameEventEngine
 from speech_filter import transcript_rejection_reason
 from wow_pixel_bridge import WowPixelBridge
@@ -52,36 +49,6 @@ class SpeechFilterTests(unittest.TestCase):
             average_logprob=-0.2,
             voiced_seconds=1.4,
         ))
-
-
-class SoundCorrectionTests(unittest.TestCase):
-    def test_voice_corrections_replace_bad_analysis_permanently(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            soundboard = root / "soundboard"
-            soundboard.mkdir()
-            (soundboard / "metal-pipe-sound.mp3").write_bytes(b"pipe")
-            (soundboard / "erro.mp3").write_bytes(b"error")
-            (soundboard / "library.json").write_text(json.dumps({
-                "metal-pipe-sound.mp3": {
-                    "status": "ready", "description": "rimshot", "use_when": "after jokes",
-                },
-                "erro.mp3": {
-                    "status": "ready", "description": "fanfare", "use_when": "after wins",
-                },
-            }), encoding="utf-8")
-            hub = DashboardHub(root, {}, threading.Event())
-
-            corrections = hub.observe_sound_corrections(
-                "But the metal pipes are metal pipes, and error is the Windows error message."
-            )
-            library = json.loads((soundboard / "library.json").read_text(encoding="utf-8"))
-
-            self.assertEqual(len(corrections), 2)
-            self.assertEqual(library["metal-pipe-sound.mp3"]["description"], "metal pipes")
-            self.assertIn("Windows error", library["erro.mp3"]["description"])
-            self.assertEqual(library["erro.mp3"]["description_source"], "user_voice")
-            self.assertIn("never as a victory", library["erro.mp3"]["use_when"])
 
 
 class CombatLogReliabilityTests(unittest.TestCase):

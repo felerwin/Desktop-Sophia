@@ -155,6 +155,7 @@ class EmberOverlay:
             look_angle: float | None = None
             look_until = 0.0
             one_shot = False
+            animation_sequence: list[str] = []
             next_wander_at = time.monotonic() + random.uniform(
                 self.wander_min_seconds, self.wander_max_seconds
             )
@@ -166,6 +167,14 @@ class EmberOverlay:
                 look_angle = None
                 one_shot = animation in ONE_SHOT_ANIMATIONS
                 frames = self._scaled_frames(animation)
+
+            def start_sequence(states: list[str]) -> None:
+                nonlocal animation_sequence
+                animation_sequence = [
+                    self.STATE_ANIMATIONS.get(state, "idle") for state in states
+                ]
+                if animation_sequence:
+                    set_animation(animation_sequence.pop(0))
 
             def recover_callback(exc_type, exc, tb) -> None:
                 """Keep one failed Tk animation callback from freezing Ember in place."""
@@ -185,7 +194,7 @@ class EmberOverlay:
             root.report_callback_exception = recover_callback
 
             def tick() -> None:
-                nonlocal x, y, target, target_kind, frame_index, photo, look_angle, look_until, next_wander_at
+                nonlocal x, y, target, target_kind, frame_index, photo, look_angle, look_until, next_wander_at, animation_sequence
                 while True:
                     try:
                         command = self.commands.get_nowait()
@@ -196,10 +205,16 @@ class EmberOverlay:
                         root.destroy()
                         return
                     if action == "state":
+                        animation_sequence = []
                         desired = self.STATE_ANIMATIONS.get(str(command.get("state")), "idle")
                         if desired != animation:
                             set_animation(desired)
+                    elif action == "sequence":
+                        target = None
+                        look_angle = None
+                        start_sequence([str(state) for state in command.get("states") or []])
                     elif action == "point_at":
+                        animation_sequence = []
                         raw = command.get("target") or {}
                         focus_x = int(float(raw.get("x", 0.5)) * screen_width)
                         focus_y = int(float(raw.get("y", 0.5)) * screen_height)
@@ -265,7 +280,10 @@ class EmberOverlay:
                     frame = frames[frame_index % len(frames)]
                     frame_index += 1
                     if one_shot and frame_index >= len(frames):
-                        set_animation("idle")
+                        if animation_sequence:
+                            set_animation(animation_sequence.pop(0))
+                        else:
+                            set_animation("idle")
                 photo = ImageTk.PhotoImage(frame)
                 label.configure(image=photo)
                 root.after(FRAME_INTERVAL_MS.get(animation, 280), tick)

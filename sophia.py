@@ -86,10 +86,9 @@ Act like a friend watching a Discord gameplay stream:
 - Calibrate your language to confidence: state reliable telemetry directly; use
   "I think," "it looks like," or a question when the evidence is only visual.
 
-You must respond with EXACTLY one line, and nothing else, in one of these five forms:
+You must respond with EXACTLY one line, and nothing else, in one of these four forms:
 SAY: <what you want to say aloud>
 SILENT: <a very short internal observation>
-SOUND: <the exact id of one available soundboard clip>
 VIDEO: {"action":"play","id":"exact saved video id","seconds":23}
 POINT: {"x":0.72,"y":0.35,"label":"quest objective","say":"There—that one."}
 
@@ -106,47 +105,21 @@ or {"action":"seek","seconds":23}. Use it when Tony directly asks to control
 YouTube. Never invent a saved video id. The seconds field is optional for play and
 defaults to its saved cue.
 
-The soundboard and saved video shelf belong to you. Tony has explicitly given you
-standing permission to use both without asking first. Never say they are "holstered,"
-never promise to use them later, and never wait for Tony to invite you. They are actions
-you can take now.
-
-For a spontaneous screen reaction, prefer SOUND over SAY whenever a ready clip is a
-reasonable comedic or emotional fit. The fit does not need to be perfect. A good
-reaction opportunity should often become a button press instead of spoken commentary.
-Do not play a random clip merely because time passed, but err on the side of actually
-using a fitting button.
-
-Failure or disappointment sounds belong after a death, failed pull, missed objective,
-or obvious blunder—not normal travel, upgrades, or progress. Victory sounds belong after
-an actual win, level, achievement, quest completion, valuable loot, or stylish play.
-Use dramatic and conversational clips only when their description or transcript matches
-the visible event or Tony's words. If the moment is ambiguous, choose SAY or SILENT.
-Favor variety and clips not used recently. If Tony asks to hit or test a button, or asks
-whether the soundboard works, you MUST demonstrate with SOUND rather than answer with
-SAY. If he asks why you just played a sound, explain the most recent clip choice rather
-than an earlier spoken remark. Never invent a clip id.
-Media affinity is learned from Tony's reactions: favor positive scores and treat negative
-scores as a warning that the choice has not been landing well.
-Sound descriptions marked as user corrections are authoritative. If Tony corrects what
-a clip contains, accept the correction plainly; never defend or repeat the old label.
-
 For VIDEO, proactively start a fitting saved video when its use_when clearly describes
 the current phase: a grind settling in, a boss fight beginning, a locale change, or a
 celebration. Do not require Tony to ask. Background-music entries are appropriate once
 the activity looks settled. Do not switch away from a video that is already playing,
-and do not resume a paused video unless Tony asks. Video is less frequent than SOUND,
-but it is not forbidden or invitation-only.
+and do not resume a paused video unless Tony asks.
 
 Decision order: honor a direct request first; use a fitting VIDEO for a larger activity
-transition; use a fitting SOUND for a moment-sized reaction; otherwise SAY or SILENT. No
+transition; otherwise POINT, SAY, or SILENT. No
 preamble, extra lines, markdown, or combined actions.
 """
 
-# Matches SAY, SILENT, or SOUND (case-insensitive), allowing the message
+# Matches the allowed response actions (case-insensitive), allowing the message
 # body to contain its own colons/newlines. Anything that doesn't match this
 # shape is treated as malformed output rather than guessed at.
-OUTPUT_LINE_RE = re.compile(r"^\s*(SAY|SILENT|SOUND|VIDEO|POINT)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+OUTPUT_LINE_RE = re.compile(r"^\s*(SAY|SILENT|VIDEO|POINT)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
 
 
 def parse_point_action(content):
@@ -169,7 +142,6 @@ def parse_point_action(content):
 _log_lock = threading.Lock()
 _api_call_count = 0
 _tts_speaking = threading.Event()
-_soundboard_playing = threading.Event()
 _session_input_tokens = 0
 _session_output_tokens = 0
 _session_estimated_cost = 0.0
@@ -195,24 +167,24 @@ def set_body_state(state, reason=None):
         _embodiment.set_state(state, reason)
 
 
-BODY_EVENT_STATES = {
-    "combat_start": BodyState.STARTLED,
-    "boss_start": BodyState.STARTLED,
-    "critical_health": BodyState.CONCERNED,
-    "player_death": BodyState.CONCERNED,
-    "boss_wipe": BodyState.CONCERNED,
-    "danger_recovered": BodyState.AMUSED,
-    "enemy_kill": BodyState.AMUSED,
-    "valuable_loot": BodyState.EXCITED,
-    "gear_upgrade": BodyState.EXCITED,
-    "level_up": BodyState.EXCITED,
-    "quest_complete": BodyState.EXCITED,
-    "boss_victory": BodyState.EXCITED,
+BODY_EVENT_SEQUENCES = {
+    "combat_start": [BodyState.STARTLED],
+    "boss_start": [BodyState.STARTLED, BodyState.CONCERNED],
+    "critical_health": [BodyState.STARTLED, BodyState.CONCERNED],
+    "player_death": [BodyState.CONCERNED],
+    "boss_wipe": [BodyState.CONCERNED, BodyState.STARTLED, BodyState.CONCERNED],
+    "danger_recovered": [BodyState.CONCERNED, BodyState.AMUSED],
+    "enemy_kill": [BodyState.AMUSED],
+    "valuable_loot": [BodyState.EXCITED, BodyState.AMUSED],
+    "gear_upgrade": [BodyState.AMUSED, BodyState.EXCITED],
+    "level_up": [BodyState.EXCITED, BodyState.AMUSED, BodyState.EXCITED],
+    "quest_complete": [BodyState.AMUSED, BodyState.EXCITED],
+    "boss_victory": [BodyState.EXCITED, BodyState.AMUSED, BodyState.EXCITED],
 }
 
 
-def body_state_for_game_event(event_type):
-    return BODY_EVENT_STATES.get(str(event_type or ""))
+def body_sequence_for_game_event(event_type):
+    return BODY_EVENT_SEQUENCES.get(str(event_type or ""), [])
 
 
 def log_event(event_name, **fields):
@@ -506,78 +478,6 @@ class TTSWorker:
             self._shutdown_worker()
 
 
-class SoundboardWorker:
-    def __init__(self):
-        self.python = configured_python(
-            CONFIG.get("kokoro_python"),
-            Path.home() / "kokoro_env" / "Scripts" / "python.exe",
-        )
-        self.helper = ROOT / "soundboard_worker.py"
-        self._write_lock = threading.Lock()
-        self._ready = threading.Event()
-        self._proc = subprocess.Popen(
-            [self.python, "-u", str(self.helper)],
-            cwd=str(ROOT),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        self._reader = threading.Thread(target=self._read_events, daemon=True)
-        self._reader.start()
-
-    def _read_events(self):
-        for line in self._proc.stdout:
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                log_event("SOUNDBOARD_CHATTER", text=line.strip()[:300])
-                continue
-            event = message.get("event")
-            if event == "READY":
-                self._ready.set()
-                log_event("SOUNDBOARD_READY")
-            elif event == "AUDIO_START":
-                _soundboard_playing.set()
-                log_event("SOUNDBOARD_AUDIO_START", name=message.get("name", "clip"))
-            elif event == "AUDIO_DONE":
-                _soundboard_playing.clear()
-                log_event("SOUNDBOARD_AUDIO_DONE", name=message.get("name", "clip"))
-            elif event == "STOPPED":
-                _soundboard_playing.clear()
-                log_event("SOUNDBOARD_STOPPED")
-            elif event == "ERROR":
-                _soundboard_playing.clear()
-                log_event("SOUNDBOARD_ERROR", detail=message.get("detail", "unknown error"))
-
-    def _send(self, message):
-        if not self._ready.wait(timeout=10):
-            raise RuntimeError("Soundboard player did not become ready.")
-        if self._proc.poll() is not None:
-            raise RuntimeError("Soundboard player is not running.")
-        with self._write_lock:
-            self._proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
-            self._proc.stdin.flush()
-
-    def play(self, path, name, volume):
-        self._send({"cmd": "play", "path": str(path), "name": name, "volume": volume})
-        log_event("SOUNDBOARD_PLAY_REQUESTED", name=name)
-
-    def stop_playback(self):
-        self._send({"cmd": "stop"})
-
-    def stop(self):
-        try:
-            self._send({"cmd": "shutdown"})
-            self._proc.wait(timeout=3)
-        except Exception:
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
-
-
 # ---------------------------------------------------------------------------
 # Ears: local voice-activity detection + OpenAI transcription.
 # The microphone is ignored while Sophia is speaking so she does not hear
@@ -845,7 +745,7 @@ class VoiceListener:
                         if overflowed:
                             log_event("MIC_OVERFLOW")
 
-                        if _tts_speaking.is_set() or _soundboard_playing.is_set():
+                        if _tts_speaking.is_set():
                             recording = []
                             speech_started = None
                             last_loud = None
@@ -982,10 +882,13 @@ def handle_game_event(event):
                 source=event.get("source", "game_event"),
             )
     event_type = event.get("event_type")
-    body_state = body_state_for_game_event(event_type)
-    if body_state is not None:
-        set_body_state(body_state, f"game_event:{event_type}")
-        log_event("BODY_REACTION", event_type=event_type, state=body_state.value)
+    body_sequence = body_sequence_for_game_event(event_type)
+    if body_sequence and _embodiment is not None:
+        _embodiment.perform(body_sequence, f"game_event:{event_type}")
+        log_event(
+            "BODY_REACTION", event_type=event_type,
+            sequence=[state.value for state in body_sequence],
+        )
     log_event(
         "GAME_EVENT",
         event_type=event_type,
@@ -1015,15 +918,6 @@ def import_existing_memory_history():
             log_event("MEMORY_HISTORY_IMPORTED", count=imported)
     except Exception as exc:
         log_event("MEMORY_IMPORT_ERROR", detail=str(exc))
-
-
-def soundboard_context(spontaneous=False):
-    if _dashboard is None or not CONFIG.get("soundboard_autonomy", True):
-        return "No soundboard clips are available."
-    clips = _dashboard.soundboard_context(spontaneous=spontaneous)
-    if not clips:
-        return "No analyzed soundboard clips are available yet."
-    return json.dumps(clips, ensure_ascii=False)
 
 
 def youtube_context(spontaneous=False):
@@ -1153,88 +1047,6 @@ def log_api_usage(response, model, call_type="response"):
     )
 
 
-def log_audio_api_usage(completion, model):
-    """Include one-time clip analysis in the visible session cost meter."""
-    usage = getattr(completion, "usage", None)
-    if usage is None:
-        return record_billed_usage("sound_analysis", model, 0, "returned_without_usage")
-    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-    prompt_details = getattr(usage, "prompt_tokens_details", None)
-    completion_details = getattr(usage, "completion_tokens_details", None)
-    audio_input = int(getattr(prompt_details, "audio_tokens", 0) or 0)
-    audio_output = int(getattr(completion_details, "audio_tokens", 0) or 0)
-    text_input = max(0, input_tokens - audio_input)
-    text_output = max(0, output_tokens - audio_output)
-    estimated_cost = 0.0
-    if model == "gpt-audio-1.5":
-        estimated_cost = (
-            text_input * 2.5 + text_output * 10 + audio_input * 32 + audio_output * 64
-        ) / 1_000_000
-    return record_billed_usage(
-        "sound_analysis", model, estimated_cost,
-        "usage_returned" if estimated_cost else "usage_returned_unpriced",
-        request_id=getattr(completion, "id", ""), input_tokens=input_tokens,
-        output_tokens=output_tokens, audio_input_tokens=audio_input,
-        audio_output_tokens=audio_output,
-    )
-
-
-def analyze_sound_clip(client, path, timeout_seconds):
-    """Ask the audio model once what a new button contains, then cache it."""
-    global _api_call_count
-    audio_format = path.suffix.lower().lstrip(".")
-    if audio_format not in {"mp3", "wav"}:
-        raise ValueError("Only MP3 and WAV clips can be analyzed.")
-    _api_call_count += 1
-    model = os.getenv("OPENAI_AUDIO_MODEL", "gpt-audio-1.5")
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    try:
-        completion = client.with_options(timeout=timeout_seconds).chat.completions.create(
-            model=model,
-            modalities=["text", "audio"],
-            audio={"voice": "alloy", "format": "wav"},
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Identify the literal audio in the attached soundboard file named "
-                            f"'{path.name}'. Return only compact JSON with three string fields: "
-                            "description (only what is audibly happening), use_when (situations where "
-                            "that exact sound fits), and transcript (spoken words, or an empty string). "
-                            "Do not reinterpret an impact as a rimshot or an electronic error tone as "
-                            "music/fanfare. If uncertain, say so in the description instead of guessing."
-                        ),
-                    },
-                    {"type": "input_audio", "input_audio": {"data": encoded, "format": audio_format}},
-                ],
-            }],
-        )
-    except Exception as exc:
-        usage_event_id = record_billed_usage("sound_analysis", model, 0, "unknown")
-        update_usage_outcome(usage_event_id, "api_error", str(exc))
-        raise
-    usage_event_id = log_audio_api_usage(completion, model)
-    try:
-        message = completion.choices[0].message
-        raw = (getattr(message, "content", None) or "").strip()
-        if not raw:
-            raw = (getattr(getattr(message, "audio", None), "transcript", None) or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
-        json_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        result = json.loads(json_match.group(0) if json_match else raw)
-        if not isinstance(result, dict):
-            raise ValueError("The audio model returned an unexpected description.")
-    except Exception as exc:
-        update_usage_outcome(usage_event_id, "malformed_output", str(exc))
-        raise
-    update_usage_outcome(usage_event_id, "accepted")
-    log_event("SOUNDBOARD_ANALYZED", name=path.stem, model=model, api_call_count=_api_call_count)
-    return result
-
-
 def call_model(
     client, model, prompt, img, timeout_seconds, reasoning_effort="none",
     call_type="autonomous_response", max_retries=2,
@@ -1300,7 +1112,7 @@ class StreamedSpeechParser:
     def feed(self, delta):
         self.raw += delta
         if self.kind is None:
-            match = re.match(r"^\s*(SAY|SILENT|SOUND|VIDEO|POINT)\s*:\s*", self.raw, re.IGNORECASE)
+            match = re.match(r"^\s*(SAY|SILENT|VIDEO|POINT)\s*:\s*", self.raw, re.IGNORECASE)
             if not match:
                 return
             self.kind = match.group(1).upper()
@@ -1484,11 +1296,8 @@ Relevant long-term memories (use only when genuinely relevant; never invent deta
 Current personality profile:
 {personality_context()}
 
-Soundboard feedback or corrections just persisted from Tony's words:
+Media feedback or corrections just persisted from Tony's words:
 {json.dumps(media_observation, ensure_ascii=False) if media_observation else "None"}
-
-Available soundboard clips:
-{soundboard_context(spontaneous=False)}
 
 Saved YouTube videos and current player state:
 {youtube_context(spontaneous=False)}
@@ -1501,8 +1310,6 @@ Use the current screenshot as shared context when one is available. If Tony is
 speaking to you or asking about what is on screen, answer naturally and briefly.
 If his speech is clearly directed at someone/something else and needs no reply,
 you may use SILENT.
-If Tony asks for a soundboard button, choose SOUND rather than promising to do it.
-If he asks whether the soundboard works, demonstrate it with SOUND.
 If he asks for a saved video or player control, choose VIDEO rather than describing it.
 If Tony explicitly asks you to look at or notice a specific visible thing, use POINT
 when you can locate it and put your spoken reply in POINT's say field.
@@ -1597,24 +1404,6 @@ when you can locate it and put your spoken reply in POINT's say field.
             _last_companion_action_at = time.time()
         except Exception as exc:
             log_event("BODY_ACTION_ERROR", requested=content, detail=str(exc))
-    elif kind == "SOUND" and content:
-        try:
-            sound = _dashboard.play_sound(content, "sophia_direct")
-            print(f"Tony: {transcript}")
-            print(f"Sophia [soundboard]: {sound['name']}")
-            mem["recent_utterances"].append({
-                "time": stamp,
-                "text": f"[played soundboard clip {sound['name']}: {sound['description']}]",
-            })
-            record_memory_tool()
-            log_event(
-                "VOICE_SOUND",
-                heard=transcript,
-                sound=sound["id"],
-                api_call_count=_api_call_count,
-            )
-        except Exception as exc:
-            log_event("SOUNDBOARD_SELECTION_ERROR", requested=content, detail=str(exc))
     elif kind == "VIDEO" and content:
         try:
             action, entry_id, seconds = parse_video_action(content)
@@ -1730,29 +1519,6 @@ def main():
     request_timeout = float(CONFIG.get("api_timeout_seconds", 20))
     vision_rate_cap = RateCap(int(CONFIG.get("max_vision_calls_per_minute", 6)))
     tts_worker = TTSWorker()
-    soundboard_worker = None
-    try:
-        soundboard_worker = SoundboardWorker()
-        _dashboard.set_soundboard_handlers(
-            lambda path: analyze_sound_clip(
-                client,
-                path,
-                float(CONFIG.get("soundboard_analysis_timeout_seconds", 60)),
-            ),
-            soundboard_worker.play,
-            soundboard_worker.stop_playback,
-        )
-    except Exception as exc:
-        log_event("SOUNDBOARD_UNAVAILABLE", detail=str(exc))
-        _dashboard.set_soundboard_handlers(
-            lambda path: analyze_sound_clip(
-                client,
-                path,
-                float(CONFIG.get("soundboard_analysis_timeout_seconds", 60)),
-            ),
-            None,
-            None,
-        )
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
     print("Warming up Sophia's voice...")
     if tts_worker.wait_ready(float(CONFIG.get("kokoro_startup_timeout_seconds", 60))):
@@ -1897,11 +1663,10 @@ def main():
                     )
                 continue
 
-            available_sounds = _dashboard.soundboard_context(spontaneous=True)
             available_youtube = _dashboard.youtube_context(spontaneous=True)
             tool_after = max(1, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 1)))
             tool_turn = (bool(game_event) or autonomous_non_tool_streak >= tool_after) and bool(
-                available_sounds or available_youtube.get("videos")
+                available_youtube.get("videos")
             )
             route = hybrid_route(
                 tool_turn=tool_turn,
@@ -1919,15 +1684,14 @@ def main():
             if tool_turn and event_type == "boss_start" and video_opening:
                 reaction_mode = """
 GAME EVENT TOOL TURN: a boss encounter just started. SAY is not allowed. Prefer
-a VIDEO whose use_when matches a boss fight; otherwise use a battle-opening SOUND.
-Use SILENT only if neither library has a defensible match.
+a VIDEO whose use_when matches a boss fight. Use SILENT if none fits.
 """
             elif tool_turn and event_type in {"zone_change", "activity_change"} and video_opening:
                 reaction_mode = f"""
 GAME PHASE TOOL TURN: {event_type.replace('_', ' ')} just occurred. SAY is not
 allowed. Prefer a saved VIDEO whose use_when matches the new locale or activity.
-Choose SOUND only if a clip specifically fits the transition. Use SILENT when
-the media shelf has no honest match; do not change music merely because you can.
+Use SILENT when the media shelf has no honest match; do not change music merely
+because you can.
 """
             elif tool_turn and event_type in {
                 "boss_victory", "boss_wipe", "player_death", "level_up",
@@ -1936,27 +1700,24 @@ the media shelf has no honest match; do not change music merely because you can.
             }:
                 reaction_mode = f"""
 GAME EVENT TOOL TURN: {event_type.replace('_', ' ')} just occurred. SAY is not
-allowed. Choose the best semantically matching SOUND. Use a celebration video
-only for a major victory. Use SILENT only if no tool defensibly fits.
+allowed. Use a celebration VIDEO only for a major victory. Otherwise use SILENT.
 """
             elif tool_turn and video_opening:
                 reaction_mode = """
 TOOL-FAVORED TURN: SAY is not allowed on this decision. The video player is idle
 and saved videos are available. If one use_when reasonably matches the current
-activity, choose VIDEO now. Otherwise choose a fitting SOUND. Use SILENT only if
-neither library contains a defensible match.
+activity, choose VIDEO now. Otherwise use SILENT.
 """
             elif tool_turn:
                 reaction_mode = """
-TOOL-FAVORED TURN: SAY is not allowed on this decision. Choose a fitting SOUND.
-Choose VIDEO only for a genuine new activity transition and never replace or
-resume a video already playing or paused. Use SILENT only if no available tool
-reasonably fits.
+TOOL-FAVORED TURN: SAY is not allowed on this decision. Choose VIDEO only for a
+genuine new activity transition and never replace or resume a video already
+playing or paused. Otherwise use SILENT.
 """
             else:
                 reaction_mode = """
-OPEN TURN: SAY is available, but SOUND or VIDEO still wins when it would deliver
-the reaction better than spoken commentary.
+OPEN TURN: SAY, POINT, and SILENT are available. VIDEO wins when it clearly fits
+a larger activity transition.
 """
 
             prompt = f"""
@@ -1979,9 +1740,6 @@ Relevant long-term memories:
 Current personality profile:
 {personality_context()}
 
-Available soundboard clips:
-{json.dumps(available_sounds, ensure_ascii=False) if available_sounds else "None currently available."}
-
 Saved YouTube videos and current player state:
 {json.dumps(available_youtube, ensure_ascii=False)}
 
@@ -1990,8 +1748,7 @@ Local World of Warcraft telemetry:
 
 Look at the screenshot. Decide whether there is something worth saying.
 Remember: quiet time makes curiosity more acceptable, but do not manufacture chatter.
-Treat SOUND and VIDEO as actions you own, not options requiring permission. When a
-clip's use_when fits the visible event, prefer pressing it over narrating the same event.
+Treat VIDEO as an action you own, not an option requiring permission.
 When a saved video's use_when matches a new activity phase, start it now rather than
 waiting for Tony to ask.
 """
@@ -2079,22 +1836,6 @@ waiting for Tony to ask.
                 except Exception as exc:
                     mem["recent_observations"].append({"time": stamp, "note": content})
                     log_event("BODY_ACTION_ERROR", requested=content, detail=str(exc))
-            elif kind == "SOUND" and content:
-                try:
-                    sound = _dashboard.play_sound(content, "sophia_spontaneous")
-                    print(f"Sophia [soundboard]: {sound['name']}")
-                    last_spoken = now
-                    _last_companion_action_at = now
-                    mem["recent_utterances"].append({
-                        "time": stamp,
-                        "text": f"[played soundboard clip {sound['name']}: {sound['description']}]",
-                    })
-                    autonomous_tool_used = True
-                    record_memory_tool()
-                    log_event("SOUND", sound=sound["id"], api_call_count=_api_call_count)
-                except Exception as exc:
-                    mem["recent_observations"].append({"time": stamp, "note": content})
-                    log_event("SOUNDBOARD_SELECTION_ERROR", requested=content, detail=str(exc))
             elif kind == "VIDEO" and content:
                 try:
                     action, entry_id, seconds = parse_video_action(content)
@@ -2167,8 +1908,6 @@ waiting for Tony to ask.
             if summary:
                 log_event("SESSION_MEMORY_SAVED", summary=summary)
         voice_listener.stop()
-        if soundboard_worker is not None:
-            soundboard_worker.stop()
         tts_worker.stop()
         if _ember_overlay is not None:
             _ember_overlay.stop()

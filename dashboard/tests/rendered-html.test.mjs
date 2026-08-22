@@ -34,7 +34,6 @@ test("server-renders Sophia's dashboard", async () => {
   assert.match(html, /Put her to sleep/i);
   assert.match(html, /THE TUBE/i);
   assert.match(html, /LONG-TERM MEMORY/i);
-  assert.match(html, /SOPHIA’S SOUNDBOARD/i);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/i);
 });
 
