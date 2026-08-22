@@ -7,6 +7,7 @@ import queue
 import random
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,23 @@ class EmberOverlay:
                 look_angle = None
                 one_shot = animation in ONE_SHOT_ANIMATIONS
                 frames = self._scaled_frames(animation)
+
+            def recover_callback(exc_type, exc, tb) -> None:
+                """Keep one failed Tk animation callback from freezing Ember in place."""
+                nonlocal target, next_wander_at
+                self.error = f"overlay callback recovered: {exc_type.__name__}: {exc}"
+                traceback.print_exception(exc_type, exc, tb)
+                target = None
+                set_animation("idle")
+                next_wander_at = time.monotonic() + random.uniform(
+                    self.wander_min_seconds, self.wander_max_seconds
+                )
+                try:
+                    root.after(FRAME_INTERVAL_MS["idle"], tick)
+                except tk.TclError:
+                    pass
+
+            root.report_callback_exception = recover_callback
 
             def tick() -> None:
                 nonlocal x, y, target, frame_index, photo, look_angle, next_wander_at
