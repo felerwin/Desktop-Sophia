@@ -19,7 +19,7 @@ export default function Home() {
         <div className="pulseCopy">
           <p className="eyebrow">RIGHT NOW</p>
           <h2>I’m listening.</h2>
-          <p>H510-PRO Wireless · Lily · Luna</p>
+          <p>H510-PRO Wireless · Lily · Terra + Luna</p>
         </div>
         <div className="wave" aria-hidden="true">
           {[18, 32, 48, 25, 55, 38, 61, 29, 44, 20, 36, 16].map((height, i) => (
@@ -34,7 +34,7 @@ export default function Home() {
 
       <section className="metricGrid" aria-label="Session metrics">
         <article><span>First audio</span><strong>2.94s</strong><small>↓ 0.98s today</small></article>
-        <article><span>Model first text</span><strong>0.62s</strong><small>Luna · none</small></article>
+        <article><span>Model first text</span><strong>0.62s</strong><small>Terra + Luna · hybrid</small></article>
         <article><span>Speech endpoint</span><strong>1.00s</strong><small>Stable</small></article>
         <article><span>Session cost</span><strong>$0.0118</strong><small>5 calls</small></article>
       </section>
@@ -90,7 +90,7 @@ export default function Home() {
 
           <details className="panel diagnostics">
             <summary><span>Diagnostics</span><small>All systems nominal</small></summary>
-            <pre>[MIC_READY] H510-PRO Wireless{`\n`}[KOKORO_READY] bf_lily · cuda{`\n`}[MODEL] gpt-5.6-luna</pre>
+            <pre>[MIC_READY] H510-PRO Wireless{`\n`}[KOKORO_READY] bf_lily · cuda{`\n`}[MODEL] Terra companion · Luna router</pre>
           </details>
         </aside>
       </section>

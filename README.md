@@ -44,6 +44,12 @@ spontaneous remarks, soundboard, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
 
+Sophia uses a hybrid model route. Terra handles direct conversation, open-ended
+screen understanding, and reliable game events with low reasoning effort. Luna
+handles routine soundboard and video-only decisions at no reasoning effort. Set
+`OPENAI_COMPANION_MODEL` and `OPENAI_ROUTER_MODEL` in `.env` to change either
+role independently.
+
 ### Cost governor
 
 The dashboard shows both the raw session estimate and a safety-adjusted guarded
@@ -128,8 +134,8 @@ installation.
 ## Development checks
 
 ```powershell
-.venv\Scripts\python.exe -m unittest test_game_events.py test_reliability.py test_spotify_control.py test_usage_costs.py test_behavior_fixtures.py
-.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py speech_filter.py spotify_control.py usage_costs.py wow_pixel_bridge.py
+.venv\Scripts\python.exe -m unittest test_game_events.py test_reliability.py test_spotify_control.py test_usage_costs.py test_behavior_fixtures.py test_model_routing.py
+.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py model_routing.py speech_filter.py spotify_control.py usage_costs.py wow_pixel_bridge.py
 cd dashboard
 npm install
 npm test

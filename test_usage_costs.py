@@ -13,6 +13,12 @@ class UsageCostTests(unittest.TestCase):
             1.355,
         )
 
+    def test_terra_cost_includes_cached_input_discount(self):
+        self.assertAlmostEqual(
+            response_cost("gpt-5.6-terra", 1_000_000, 1_000_000, 250_000),
+            13.55,
+        )
+
     def test_transcription_is_charged_by_audio_duration(self):
         self.assertAlmostEqual(
             transcription_cost("gpt-4o-mini-transcribe", 30), 0.0015

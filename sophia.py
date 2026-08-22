@@ -12,6 +12,7 @@ from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
 from game_events import GameEventEngine
 from memory_store import MemoryStore
+from model_routing import hybrid_route
 from speech_filter import transcript_rejection_reason
 from spotify_control import SpotifyClient, SpotifyError
 from usage_costs import budget_decision, response_cost, transcription_cost
@@ -162,17 +163,17 @@ _session_id = None
 _shutdown_requested = threading.Event()
 
 
-def log_event(event_type, **fields):
-    entry = {"time": datetime.now().isoformat(timespec="seconds"), "event": event_type}
+def log_event(event_name, **fields):
+    entry = {"time": datetime.now().isoformat(timespec="seconds"), "event": event_name}
     entry.update(fields)
     line = json.dumps(entry)
     with _log_lock:
         with SESSION_LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     extra = ", ".join(f"{k}={v}" for k, v in fields.items())
-    print(f"[{event_type}]" + (f" {extra}" if extra else ""))
+    print(f"[{event_name}]" + (f" {extra}" if extra else ""))
     if _dashboard is not None:
-        _dashboard.record(event_type, fields)
+        _dashboard.record(event_name, fields)
 
 
 # ---------------------------------------------------------------------------
@@ -1066,7 +1067,7 @@ def parse_video_action(content):
 
 
 def log_api_usage(response, model, call_type="response"):
-    """Log exact token counts and an estimated Luna cost for this session."""
+    """Log exact token counts and the selected model's estimated cost."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return record_billed_usage(
@@ -1169,7 +1170,10 @@ def analyze_sound_clip(client, path, timeout_seconds):
     return result
 
 
-def call_model(client, model, prompt, img, timeout_seconds, max_retries=2):
+def call_model(
+    client, model, prompt, img, timeout_seconds, reasoning_effort="none",
+    call_type="autonomous_response", max_retries=2,
+):
     """Returns (raw_text, error, usage_event_id). Usage is persisted before parsing."""
     global _api_call_count
     backoff = 2.0
@@ -1182,17 +1186,17 @@ def call_model(client, model, prompt, img, timeout_seconds, max_retries=2):
             response = client.with_options(timeout=timeout_seconds).responses.create(
                 model=model,
                 instructions=SYSTEM,
-                reasoning={"effort": "none"},
+                reasoning={"effort": reasoning_effort},
                 input=[{
                     "role": "user",
                     "content": content,
                 }],
             )
-            usage_event_id = log_api_usage(response, model, "autonomous_response")
+            usage_event_id = log_api_usage(response, model, call_type)
             return response.output_text, None, usage_event_id
         except APITimeoutError as e:
             event_id = record_billed_usage(
-                "autonomous_response", model, 0, "unknown"
+                call_type, model, 0, "unknown"
             )
             update_usage_outcome(event_id, "timeout", str(e))
             return None, ("TIMEOUT", str(e)), event_id
@@ -1203,16 +1207,16 @@ def call_model(client, model, prompt, img, timeout_seconds, max_retries=2):
                 backoff *= 2
                 continue
             event_id = record_billed_usage(
-                "autonomous_response", model, 0, "not_billed_rate_limit"
+                call_type, model, 0, "not_billed_rate_limit"
             )
             update_usage_outcome(event_id, "rate_limited", str(e))
             return None, ("RATE_LIMITED", str(e)), event_id
         except APIError as e:
-            event_id = record_billed_usage("autonomous_response", model, 0, "unknown")
+            event_id = record_billed_usage(call_type, model, 0, "unknown")
             update_usage_outcome(event_id, "api_error", str(e))
             return None, ("API_ERROR", str(e)), event_id
         except Exception as e:
-            event_id = record_billed_usage("autonomous_response", model, 0, "unknown")
+            event_id = record_billed_usage(call_type, model, 0, "unknown")
             update_usage_outcome(event_id, "api_error", str(e))
             return None, ("API_ERROR", str(e)), event_id
     return None, ("RATE_LIMITED", "max retries exceeded"), None
@@ -1270,7 +1274,10 @@ class StreamedSpeechParser:
         self.on_phrase(text, self.phrase_index)
 
 
-def call_model_streaming(client, model, prompt, img, timeout_seconds, on_phrase):
+def call_model_streaming(
+    client, model, prompt, img, timeout_seconds, on_phrase,
+    reasoning_effort="low",
+):
     """Stream a conversational response and queue validated SAY phrases early."""
     global _api_call_count
     _api_call_count += 1
@@ -1285,7 +1292,7 @@ def call_model_streaming(client, model, prompt, img, timeout_seconds, on_phrase)
         stream = client.with_options(timeout=timeout_seconds).responses.create(
             model=model,
             instructions=SYSTEM,
-            reasoning={"effort": "none"},
+            reasoning={"effort": reasoning_effort},
             input=[{
                 "role": "user",
                 "content": content,
@@ -1343,7 +1350,9 @@ def call_model_streaming(client, model, prompt, img, timeout_seconds, on_phrase)
 
 
 
-def handle_spoken_turn(client, model, request_timeout, tts_worker, mem, turn):
+def handle_spoken_turn(
+    client, model, reasoning_effort, request_timeout, tts_worker, mem, turn
+):
     """Tony speaking is a conversational turn, so it bypasses the autonomous
     comment cooldown. We grab a fresh screenshot so questions can refer to
     whatever is currently on screen."""
@@ -1448,6 +1457,10 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
             ),
         )
 
+    log_event(
+        "MODEL_ROUTED", role="companion", model=model,
+        reasoning_effort=reasoning_effort, direct=True,
+    )
     raw_out, err, first_delta_at, usage_event_id = call_model_streaming(
         client,
         model,
@@ -1455,6 +1468,7 @@ If he asks for a saved video or player control, choose VIDEO rather than describ
         img,
         request_timeout,
         queue_streamed_phrase,
+        reasoning_effort=reasoning_effort,
     )
     model_finished_at = time.perf_counter()
     log_event(
@@ -1552,7 +1566,18 @@ def main():
         raise SystemExit("Missing OPENAI_API_KEY. Copy .env.example to .env and add your key.")
 
     client = OpenAI(api_key=key)
-    model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+    legacy_model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+    companion_model = os.getenv("OPENAI_COMPANION_MODEL", "gpt-5.6-terra")
+    router_model = os.getenv("OPENAI_ROUTER_MODEL", legacy_model)
+    companion_effort = str(CONFIG.get("companion_reasoning_effort", "low"))
+    router_effort = str(CONFIG.get("router_reasoning_effort", "none"))
+    direct_route = hybrid_route(
+        direct=True,
+        companion_model=companion_model,
+        router_model=router_model,
+        companion_effort=companion_effort,
+        router_effort=router_effort,
+    )
     _memory_store = MemoryStore(ROOT / "sophia_memory.db")
     _session_id = _memory_store.start_session()
     _game_events = GameEventEngine(
@@ -1642,7 +1667,14 @@ def main():
         CONFIG.get("autonomous_tool_after_non_tool_turns", 1)
     )
 
-    log_event("SESSION_START", model=model)
+    log_event(
+        "SESSION_START",
+        model=f"{companion_model} + {router_model}",
+        companion_model=companion_model,
+        companion_reasoning_effort=companion_effort,
+        router_model=router_model,
+        router_reasoning_effort=router_effort,
+    )
     try:
         default_in, default_out = sd.default.device
         in_name = sd.query_devices(default_in)["name"] if default_in is not None and default_in >= 0 else "none"
@@ -1659,7 +1691,10 @@ def main():
         while not _shutdown_requested.is_set():
             transcript = pop_transcript(voice_listener)
             if transcript:
-                handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                handle_spoken_turn(
+                    client, direct_route["model"], direct_route["reasoning_effort"],
+                    request_timeout, tts_worker, mem, transcript,
+                )
                 continue
 
             if _tts_speaking.is_set():
@@ -1679,7 +1714,8 @@ def main():
                 )
                 if transcript:
                     handle_spoken_turn(
-                        client, model, request_timeout, tts_worker, mem, transcript
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
                     )
                 continue
 
@@ -1693,7 +1729,10 @@ def main():
             if (not screen_enabled or not spontaneous_enabled) and not game_event:
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
-                    handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                    handle_spoken_turn(
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
+                    )
                 continue
 
             img = None
@@ -1704,7 +1743,10 @@ def main():
                 log_event("CAPTURE_ERROR", detail=capture_err)
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
-                    handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                    handle_spoken_turn(
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
+                    )
                 continue
 
             change = difference_score(previous, img) if img is not None else 0.0
@@ -1723,7 +1765,10 @@ def main():
                 log_event("NOT_TRIGGERED", change=round(change, 1), silence=int(silence))
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
-                    handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                    handle_spoken_turn(
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
+                    )
                 continue
 
             if not game_event and not vision_rate_cap.allow():
@@ -1734,7 +1779,10 @@ def main():
                           max_per_minute=vision_rate_cap.max_per_minute)
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
-                    handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                    handle_spoken_turn(
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
+                    )
                 continue
 
             available_sounds = _dashboard.soundboard_context(spontaneous=True)
@@ -1742,6 +1790,14 @@ def main():
             tool_after = max(1, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 1)))
             tool_turn = (bool(game_event) or autonomous_non_tool_streak >= tool_after) and bool(
                 available_sounds or available_youtube.get("videos")
+            )
+            route = hybrid_route(
+                tool_turn=tool_turn,
+                has_game_event=bool(game_event),
+                companion_model=companion_model,
+                router_model=router_model,
+                companion_effort=companion_effort,
+                router_effort=router_effort,
             )
             player_status = str(available_youtube.get("status") or "idle").lower()
             video_opening = bool(available_youtube.get("videos")) and player_status in {
@@ -1827,8 +1883,15 @@ clip's use_when fits the visible event, prefer pressing it over narrating the sa
 When a saved video's use_when matches a new activity phase, start it now rather than
 waiting for Tony to ask.
 """
+            log_event(
+                "MODEL_ROUTED", role=route["role"], model=route["model"],
+                reasoning_effort=route["reasoning_effort"],
+                game_event=event_type, tool_turn=tool_turn,
+            )
             raw_out, err, usage_event_id = call_model(
-                client, model, prompt, img, request_timeout
+                client, route["model"], prompt, img, request_timeout,
+                reasoning_effort=route["reasoning_effort"],
+                call_type=f"autonomous_{route['role']}",
             )
 
             if err:
@@ -1836,7 +1899,10 @@ waiting for Tony to ask.
                 log_event(kind, detail=detail, api_call_count=_api_call_count)
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
-                    handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                    handle_spoken_turn(
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
+                    )
                 continue
 
             stamp = datetime.now().isoformat(timespec="seconds")
@@ -1850,7 +1916,10 @@ waiting for Tony to ask.
                            api_call_count=_api_call_count)
                 transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
                 if transcript:
-                    handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                    handle_spoken_turn(
+                        client, direct_route["model"], direct_route["reasoning_effort"],
+                        request_timeout, tts_worker, mem, transcript,
+                    )
                 continue
 
             kind = match.group(1).upper()
@@ -1940,7 +2009,10 @@ waiting for Tony to ask.
 
             transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
             if transcript:
-                handle_spoken_turn(client, model, request_timeout, tts_worker, mem, transcript)
+                handle_spoken_turn(
+                    client, direct_route["model"], direct_route["reasoning_effort"],
+                    request_timeout, tts_worker, mem, transcript,
+                )
     except KeyboardInterrupt:
         print("\nSophia is going to sleep.")
     finally:
