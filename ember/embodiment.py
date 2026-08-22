@@ -56,6 +56,14 @@ class EmbodimentController:
             "remark": remark,
         })
 
+    def perform(self, states: list[BodyState], reason: str | None = None) -> None:
+        sequence = [state.value for state in states if state != BodyState.IDLE]
+        if not sequence:
+            self.set_state(BodyState.IDLE, reason)
+            return
+        self.state = states[-1]
+        self._emit({"action": "sequence", "states": sequence, "reason": reason})
+
     def clear_target(self) -> None:
         self.target = None
         self.set_state(BodyState.IDLE)

@@ -3,7 +3,6 @@ const apiBase = window.location.port === "3000" ? "http://127.0.0.1:8766" : "";
 let locallyCleared = 0;
 let voicesLoaded = false;
 let microphonesLoaded = false;
-let soundSignature = "";
 let videoSignature = "";
 let youtubePlayer = null;
 let youtubePlayerReady = false;
@@ -43,19 +42,6 @@ function renderMessages(messages) {
     const sophia = message.speaker === "Sophia";
     return `<div class="message ${sophia ? "sophia" : "tony"}"><span>${sophia ? "S" : "T"}</span><div><small>${escapeHtml(message.speaker)} · ${escapeHtml(message.time)}</small><p>${escapeHtml(message.text)}</p></div></div>`;
   }).join("");
-}
-
-function renderSounds(sounds) {
-  const signature = sounds.map((sound) => `${sound.id}:${sound.bytes}:${sound.status}:${sound.description}:${sound.use_when}:${sound.description_source}`).join("|");
-  if (signature === soundSignature) return;
-  soundSignature = signature;
-  if (!sounds.length) {
-    $("soundGrid").innerHTML = '<div class="soundEmpty"><strong>No clips yet</strong><span>Add MP3 or WAV meme clips to give Sophia some ammunition.</span></div>';
-    return;
-  }
-  $("soundGrid").innerHTML = sounds.map((sound, index) =>
-    `<div class="soundTile"><button class="soundPlay" data-sound="${encodeURIComponent(sound.id)}" data-name="${escapeHtml(sound.name)}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(sound.name)}</strong><small>${escapeHtml(sound.description || "Waiting for analysis")}</small><em>${(sound.bytes / 1024 / 1024).toFixed(1)} MB · ${escapeHtml(sound.status)}${sound.description_source?.startsWith("user") ? " · Tony corrected" : ""}${sound.affinity ? ` · affinity ${Number(sound.affinity).toFixed(1)}` : ""}</em></button><button class="soundEdit" data-edit="${encodeURIComponent(sound.id)}" data-description="${encodeURIComponent(sound.description || "")}" data-use-when="${encodeURIComponent(sound.use_when || "")}" aria-label="Correct ${escapeHtml(sound.name)} description">✎</button><button class="soundRemove" data-remove="${encodeURIComponent(sound.id)}" aria-label="Remove ${escapeHtml(sound.name)}">×</button></div>`
-  ).join("");
 }
 
 function formatCue(value) {
@@ -274,11 +260,9 @@ function render(state) {
   if ($("microphoneSelector") !== document.activeElement && state.selected_microphone != null) {
     $("microphoneSelector").value = String(state.selected_microphone);
   }
-  renderSounds(state.sounds || []);
   renderYoutube(state.youtube);
   renderMemories(state.memory);
   renderGameEvents(state.game_events);
-  $("soundStatus").textContent = state.soundboard_now_playing ? `Playing ${state.soundboard_now_playing}` : "Ready";
   renderMessages(state.messages || []);
 }
 
@@ -292,33 +276,6 @@ async function youtubeCommand(action, id = null, seconds = null) {
     $("youtubeStatus").textContent = result.error || "YouTube command failed";
   }
   refresh();
-}
-
-async function stopSound() {
-  await fetch(`${apiBase}/api/sound/stop`, { method: "POST" });
-  refresh();
-}
-
-async function playSound(id, name) {
-  $("soundStatus").textContent = `Playing ${name}`;
-  const response = await fetch(`${apiBase}/api/sound/play`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: decodeURIComponent(id), volume: Number($("soundVolume").value) }),
-  });
-  if (!response.ok) {
-    const result = await response.json().catch(() => ({}));
-    $("soundStatus").textContent = result.error || "Couldn’t play clip";
-  }
-}
-
-function fileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }
 
 async function refresh() {
@@ -373,79 +330,6 @@ $("microphoneSelector").addEventListener("change", async (event) => {
     refresh();
   }
 });
-
-$("soundGrid").addEventListener("click", async (event) => {
-  const play = event.target.closest("[data-sound]");
-  if (play) {
-    playSound(play.dataset.sound, play.dataset.name);
-    return;
-  }
-  const edit = event.target.closest("[data-edit]");
-  if (edit) {
-    const description = window.prompt(
-      "What does this clip actually sound like?",
-      decodeURIComponent(edit.dataset.description || ""),
-    );
-    if (description == null || !description.trim()) return;
-    const useWhen = window.prompt(
-      "When should Sophia use it?",
-      decodeURIComponent(edit.dataset.useWhen || ""),
-    );
-    if (useWhen == null) return;
-    const response = await fetch(`${apiBase}/api/sound/describe`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: decodeURIComponent(edit.dataset.edit),
-        description: description.trim(),
-        use_when: useWhen.trim(),
-      }),
-    });
-    const result = await response.json().catch(() => ({}));
-    $("soundStatus").textContent = response.ok ? "Sophia updated her notes" : (result.error || "Couldn’t update that clip");
-    soundSignature = "";
-    refresh();
-    return;
-  }
-  const remove = event.target.closest("[data-remove]");
-  if (remove && window.confirm("Remove this clip from the soundboard?")) {
-    await fetch(`${apiBase}/api/sound/archive`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: decodeURIComponent(remove.dataset.remove) }),
-    });
-    soundSignature = "";
-    refresh();
-  }
-});
-
-$("addSoundButton").addEventListener("click", () => $("soundUpload").click());
-$("soundUpload").addEventListener("change", async (event) => {
-  const files = [...event.target.files];
-  for (const file of files) {
-    if (file.size > 12 * 1024 * 1024) {
-      $("soundStatus").textContent = `${file.name} is over 12 MB`;
-      continue;
-    }
-    $("soundStatus").textContent = `Adding ${file.name}…`;
-    const response = await fetch(`${apiBase}/api/sound/upload`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: file.name, data: await fileAsBase64(file) }),
-    });
-    if (!response.ok) {
-      const result = await response.json().catch(() => ({}));
-      $("soundStatus").textContent = result.error || `Couldn’t add ${file.name}`;
-      continue;
-    }
-  }
-  event.target.value = "";
-  soundSignature = "";
-  $("soundStatus").textContent = "Ready";
-  refresh();
-});
-
-$("stopSound").addEventListener("click", stopSound);
 
 $("memoryForm").addEventListener("submit", async (event) => {
   event.preventDefault();

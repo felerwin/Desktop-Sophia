@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from ember import SpriteAtlas, WorldState
+from ember import BodyState, EmbodimentController, SpriteAtlas, WorldState
 from ember.overlay import direction_degrees
 from ember.telemetry import WowTelemetryAdapter
 
@@ -38,6 +38,18 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(direction_degrees(1, 0), 90)
         self.assertEqual(direction_degrees(0, 1), 180)
         self.assertEqual(direction_degrees(-1, 0), 270)
+
+    def test_embodiment_emits_animation_choreography(self):
+        commands = []
+        body = EmbodimentController(commands.append)
+
+        body.perform([BodyState.EXCITED, BodyState.AMUSED, BodyState.EXCITED], "level_up")
+
+        self.assertEqual(commands, [{
+            "action": "sequence",
+            "states": ["excited", "amused", "excited"],
+            "reason": "level_up",
+        }])
 
 
 if __name__ == "__main__":
