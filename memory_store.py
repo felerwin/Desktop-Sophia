@@ -90,6 +90,29 @@ class MemoryStore:
                 )
                 """,
                 """
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    request_id TEXT NOT NULL DEFAULT '',
+                    call_type TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    billing_status TEXT NOT NULL DEFAULT 'unknown',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    audio_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    audio_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    audio_seconds REAL NOT NULL DEFAULT 0,
+                    estimated_cost REAL NOT NULL DEFAULT 0,
+                    governed_cost REAL NOT NULL DEFAULT 0,
+                    outcome TEXT NOT NULL DEFAULT 'returned',
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                )
+                """,
+                """
                 CREATE TABLE IF NOT EXISTS game_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_type TEXT NOT NULL,
@@ -132,9 +155,20 @@ class MemoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(archived, pinned, importance)",
                 "CREATE INDEX IF NOT EXISTS idx_events_created ON game_events(created_at)",
                 "CREATE INDEX IF NOT EXISTS idx_turns_session ON session_turns(session_id, id)",
+                "CREATE INDEX IF NOT EXISTS idx_usage_session_time ON usage_events(session_id, created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at)",
             ]
             for statement in statements:
                 self.connection.execute(statement)
+            usage_columns = {
+                row["name"] for row in self.connection.execute(
+                    "PRAGMA table_info(usage_events)"
+                ).fetchall()
+            }
+            if "cached_input_tokens" not in usage_columns:
+                self.connection.execute(
+                    "ALTER TABLE usage_events ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0"
+                )
             defaults = {
                 "relationship": "Sophia is Tony's familiar gaming companion, candid and playful rather than servile.",
                 "voice": "Natural, observant, lightly mischievous, and comfortable with silence.",
@@ -344,6 +378,74 @@ class MemoryStore:
                 )
                 self.connection.commit()
 
+    def record_usage_event(
+        self, session_id, call_type, model, billing_status="unknown",
+        request_id="", input_tokens=0, output_tokens=0,
+        cached_input_tokens=0,
+        audio_input_tokens=0, audio_output_tokens=0, audio_seconds=0,
+        estimated_cost=0, governed_cost=0, outcome="returned", detail="",
+    ):
+        event_id = uuid.uuid4().hex[:18]
+        timestamp = _now()
+        with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO usage_events(
+                    id, session_id, request_id, call_type, model, billing_status,
+                    input_tokens, output_tokens, audio_input_tokens,
+                    cached_input_tokens,
+                    audio_output_tokens, audio_seconds, estimated_cost,
+                    governed_cost, outcome, detail, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id, session_id, str(request_id or "")[:120],
+                    str(call_type or "unknown")[:40], str(model or "unknown")[:100],
+                    str(billing_status or "unknown")[:40], int(input_tokens or 0),
+                    int(output_tokens or 0), int(audio_input_tokens or 0),
+                    int(cached_input_tokens or 0),
+                    int(audio_output_tokens or 0), float(audio_seconds or 0),
+                    float(estimated_cost or 0), float(governed_cost or 0),
+                    str(outcome or "returned")[:60], str(detail or "")[:500],
+                    timestamp, timestamp,
+                ),
+            )
+            self.connection.commit()
+        return event_id
+
+    def update_usage_outcome(self, event_id, outcome, detail=""):
+        if not event_id:
+            return
+        with self.lock:
+            self.connection.execute(
+                "UPDATE usage_events SET outcome=?, detail=?, updated_at=? WHERE id=?",
+                (str(outcome)[:60], str(detail or "")[:500], _now(), event_id),
+            )
+            self.connection.commit()
+
+    def usage_rollup(self, session_id=None, day=None):
+        clauses = []
+        values = []
+        if session_id:
+            clauses.append("session_id=?")
+            values.append(session_id)
+        if day:
+            clauses.append("substr(created_at, 1, 10)=?")
+            values.append(str(day)[:10])
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.lock:
+            row = self.connection.execute(
+                f"""
+                SELECT count(*) AS calls,
+                    coalesce(sum(estimated_cost), 0) AS estimated_cost,
+                    coalesce(sum(governed_cost), 0) AS governed_cost,
+                    sum(CASE WHEN billing_status='unknown' THEN 1 ELSE 0 END) AS unknown_calls
+                FROM usage_events{where}
+                """,
+                values,
+            ).fetchone()
+        return dict(row)
+
     def end_session(self, session_id, estimated_cost=0):
         if not session_id:
             return None
@@ -379,6 +481,9 @@ class MemoryStore:
             ).fetchall()]
 
     def record_game_event(self, event):
+        details = dict(event.get("details", {}))
+        details["_evidence"] = event.get("evidence", "local_signal")
+        details["_confidence"] = event.get("confidence", 0.9)
         with self.lock:
             cursor = self.connection.execute(
                 """
@@ -388,7 +493,7 @@ class MemoryStore:
                 (
                     event.get("event_type", "event"), event.get("game", "unknown"),
                     event.get("title", "Game event"),
-                    json.dumps(event.get("details", {}), ensure_ascii=False),
+                    json.dumps(details, ensure_ascii=False),
                     event.get("priority", "normal"), event.get("source", "local"), _now(),
                 ),
             )
@@ -407,6 +512,8 @@ class MemoryStore:
                 item["details"] = json.loads(item["details"])
             except Exception:
                 item["details"] = {}
+            item["evidence"] = item["details"].pop("_evidence", "local_signal")
+            item["confidence"] = item["details"].pop("_confidence", 0.9)
             result.append(item)
         return result
 

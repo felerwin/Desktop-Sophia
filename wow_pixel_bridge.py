@@ -19,17 +19,22 @@ class WowPixelBridge:
     MARKER = (2, 3, 4, 5, 6, 7, 1, 15)
     GRID = 12
 
-    def __init__(self, config, on_packet=None):
+    def __init__(self, config, on_packet=None, on_status=None):
         self.config = config
         self.on_packet = on_packet
+        self.on_status = on_status
         self.stop_event = threading.Event()
         self.thread = None
         self.status = "searching"
+        self._reported_status = None
         self.last_error = None
         self.last_packet_at = None
         self.last_sequence = None
         self.origin = None
         self.cell_size = None
+        self.capture_origin = None
+        self.window_detected = False
+        self.monitor_index = None
         self.state = {}
         self.gear = {}
         self.recent = deque(maxlen=30)
@@ -53,11 +58,32 @@ class WowPixelBridge:
             "last_packet_seconds_ago": round(age, 1) if age is not None else None,
             "origin": list(self.origin) if self.origin else None,
             "cell_size": self.cell_size,
+            "capture_origin": list(self.capture_origin) if self.capture_origin else None,
+            "window_detected": self.window_detected,
+            "monitor": self.monitor_index,
             "state": dict(self.state),
             "gear": [self.gear[key] for key in sorted(self.gear)],
             "recent": list(self.recent)[:12],
             "last_error": self.last_error,
         }
+
+    def _set_status(self, status):
+        self.status = status
+        if status == self._reported_status:
+            return
+        self._reported_status = status
+        if self.on_status:
+            self.on_status({
+                "status": status,
+                "origin": list(self.origin) if self.origin else None,
+                "cell_size": self.cell_size,
+                "capture_origin": (
+                    list(self.capture_origin) if self.capture_origin else None
+                ),
+                "window_detected": self.window_detected,
+                "monitor": self.monitor_index,
+                "last_error": self.last_error,
+            })
 
     @staticmethod
     def _window_origin():
@@ -106,8 +132,8 @@ class WowPixelBridge:
         try:
             for column, expected in enumerate(cls.MARKER):
                 rgb = shot.pixel(
-                    origin_x + column * cell_size + cell_size // 2,
-                    origin_y + cell_size // 2,
+                    round(origin_x + (column + 0.5) * cell_size),
+                    round(origin_y + 0.5 * cell_size),
                 )
                 actual, distance = cls._nearest(rgb)
                 if actual != expected:
@@ -117,34 +143,29 @@ class WowPixelBridge:
             return False
         return total_distance < 90000
 
-    def _find_grid(self, shot):
-        if self.origin and self.cell_size:
-            if self._marker_matches(shot, self.origin[0], self.origin[1], self.cell_size):
-                return self.origin[0], self.origin[1], self.cell_size
-        for cell_size in (8, 7, 6, 5, 4, 9, 10):
-            max_x = min(48, shot.width - cell_size * self.GRID)
-            max_y = min(48, shot.height - cell_size * self.GRID)
-            for origin_y in range(max(0, max_y) + 1):
-                for origin_x in range(max(0, max_x) + 1):
-                    if self._marker_matches(shot, origin_x, origin_y, cell_size):
-                        self.origin = (origin_x, origin_y)
-                        self.cell_size = cell_size
-                        return origin_x, origin_y, cell_size
-        self.origin = None
-        self.cell_size = None
-        return None
+    @staticmethod
+    def _candidate_cell_sizes():
+        # The addon draws eight game pixels per cell. Window maximization and
+        # GPU scaling commonly turn that into fractional desktop pixels (for
+        # example 1920x1080 -> 2560x1440 is 10.667 pixels per cell).
+        preferred = [8.0, 32 / 3, 12.0, 6.0, 10.0, 11.0, 16.0]
+        preferred.extend(value / 4 for value in range(16, 65))
+        seen = set()
+        result = []
+        for value in preferred:
+            key = round(value, 3)
+            if key not in seen:
+                seen.add(key)
+                result.append(value)
+        return result
 
-    def _decode(self, shot):
-        found = self._find_grid(shot)
-        if not found:
-            return None
-        origin_x, origin_y, cell_size = found
+    def _decode_candidate(self, shot, origin_x, origin_y, cell_size):
         symbols = []
         for index in range(self.GRID * self.GRID):
             row, column = divmod(index, self.GRID)
             rgb = shot.pixel(
-                origin_x + column * cell_size + cell_size // 2,
-                origin_y + row * cell_size + cell_size // 2,
+                round(origin_x + (column + 0.5) * cell_size),
+                round(origin_y + (row + 0.5) * cell_size),
             )
             symbol, _ = self._nearest(rgb)
             symbols.append(symbol)
@@ -165,6 +186,36 @@ class WowPixelBridge:
             return None
         return sequence, packet_type, bytes(data[4: 4 + length])
 
+    def _decode(self, shot):
+        if self.origin and self.cell_size:
+            decoded = self._decode_candidate(
+                shot, self.origin[0], self.origin[1], self.cell_size
+            )
+            if decoded:
+                return decoded
+        search_margin = int(self.config.get("wow_pixel_search_margin", 16))
+        for cell_size in self._candidate_cell_sizes():
+            if cell_size * self.GRID > min(shot.width, shot.height):
+                continue
+            max_x = min(search_margin, int(shot.width - cell_size * self.GRID))
+            max_y = min(search_margin, int(shot.height - cell_size * self.GRID))
+            for origin_y in range(max(0, max_y) + 1):
+                for origin_x in range(max(0, max_x) + 1):
+                    if not self._marker_matches(
+                        shot, origin_x, origin_y, cell_size
+                    ):
+                        continue
+                    decoded = self._decode_candidate(
+                        shot, origin_x, origin_y, cell_size
+                    )
+                    if decoded:
+                        self.origin = (origin_x, origin_y)
+                        self.cell_size = round(cell_size, 3)
+                        return decoded
+        self.origin = None
+        self.cell_size = None
+        return None
+
     @staticmethod
     def _u16(payload, offset):
         return payload[offset] + payload[offset + 1] * 256
@@ -182,7 +233,7 @@ class WowPixelBridge:
             return
         self.last_sequence = sequence
         self.last_packet_at = time.time()
-        self.status = "live"
+        self._set_status("live")
         event = None
         if packet_type == 1 and len(payload) >= 9:
             flags = payload[3]
@@ -235,19 +286,26 @@ class WowPixelBridge:
                 while not self.stop_event.is_set():
                     monitor_index = int(self.config.get("monitor", 1))
                     monitor_index = max(1, min(monitor_index, len(capture.monitors) - 1))
+                    self.monitor_index = monitor_index
                     monitor = capture.monitors[monitor_index]
                     window_origin = self._window_origin()
+                    self.window_detected = window_origin is not None
                     left = window_origin[0] if window_origin else monitor["left"]
                     top = window_origin[1] if window_origin else monitor["top"]
-                    shot = capture.grab({"left": left, "top": top, "width": 180, "height": 180})
+                    self.capture_origin = (left, top)
+                    capture_size = int(self.config.get("wow_pixel_capture_size", 260))
+                    shot = capture.grab({
+                        "left": left, "top": top,
+                        "width": capture_size, "height": capture_size,
+                    })
                     decoded = self._decode(shot)
                     if decoded:
                         self._handle(*decoded)
                     elif self.last_packet_at and time.time() - self.last_packet_at > 2:
-                        self.status = "signal_lost"
+                        self._set_status("signal_lost")
                     else:
-                        self.status = "searching"
+                        self._set_status("searching")
                     self.stop_event.wait(0.2)
         except Exception as exc:
-            self.status = "error"
             self.last_error = str(exc)[:300]
+            self._set_status("error")

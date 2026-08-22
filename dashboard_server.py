@@ -55,6 +55,8 @@ class DashboardHub:
         self.thread = None
         self.voice_change_handler = None
         self.microphone_change_handler = None
+        self.budget_state_provider = None
+        self.budget_resume_handler = None
         self.microphone_options = []
         self.sound_analyzer = None
         self.sound_play_handler = None
@@ -67,6 +69,7 @@ class DashboardHub:
             "voice": "—",
             "microphone": "—",
             "session_cost": 0.0,
+            "session_governed_cost": 0.0,
             "api_calls": 0,
             "first_audio": None,
             "first_text": None,
@@ -83,6 +86,15 @@ class DashboardHub:
     def set_context_services(self, memory_store=None, game_events=None):
         self.memory_store = memory_store
         self.game_events = game_events
+
+    def set_budget_handlers(self, state_provider, resume_handler):
+        self.budget_state_provider = state_provider
+        self.budget_resume_handler = resume_handler
+
+    def resume_budget(self):
+        if self.budget_resume_handler is None:
+            raise ValueError("The budget governor is not ready.")
+        return self.budget_resume_handler()
 
     def record(self, event_type, fields):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -135,6 +147,9 @@ class DashboardHub:
                 self.state["session_cost"] = fields.get(
                     "session_estimated_cost_usd", self.state["session_cost"]
                 )
+                self.state["session_governed_cost"] = fields.get(
+                    "session_governed_cost_usd", self.state["session_governed_cost"]
+                )
             elif event_type == "SOUNDBOARD_AUDIO_START":
                 self.state["soundboard_now_playing"] = fields.get("name")
             elif event_type in {"SOUNDBOARD_AUDIO_DONE", "SOUNDBOARD_STOPPED"}:
@@ -144,6 +159,12 @@ class DashboardHub:
                 self.state["phase_label"] = "Asleep"
 
     def snapshot(self):
+        budget = self.budget_state_provider() if self.budget_state_provider else {}
+        if self.memory_store is not None:
+            daily = self.memory_store.usage_rollup(
+                day=datetime.now().astimezone().date().isoformat()
+            )
+            budget = {**budget, "daily": daily}
         with self.lock:
             controls = {
                 "speak_out_loud": bool(self.config.get("speak_out_loud", True)),
@@ -158,6 +179,7 @@ class DashboardHub:
                 **self.state,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "controls": controls,
+                "budget": budget,
                 "voice_options": VOICE_OPTIONS,
                 "selected_voice": self.config.get("kokoro_voice", "af_bella"),
                 "microphone_options": self.microphone_options,
@@ -202,6 +224,7 @@ class DashboardHub:
                     "description": metadata.get("description", "Not analyzed yet."),
                     "use_when": metadata.get("use_when", ""),
                     "transcript": metadata.get("transcript", ""),
+                    "description_source": metadata.get("description_source", "audio_analysis"),
                     "affinity": (
                         self.memory_store.media_score("sound", path.name)
                         if self.memory_store is not None else 0
@@ -219,6 +242,125 @@ class DashboardHub:
         temp_path = self.soundboard_library_path.with_suffix(".tmp")
         temp_path.write_text(json.dumps(library, indent=2), encoding="utf-8")
         os.replace(temp_path, self.soundboard_library_path)
+
+    def correct_sound_metadata(
+        self, sound_id, description, use_when=None, transcript=None,
+        source="user_dashboard",
+    ):
+        sound_id = Path(str(sound_id or "")).name
+        sound = next(
+            (item for item in self.list_sounds() if item["id"].lower() == sound_id.lower()),
+            None,
+        )
+        description = re.sub(r"\s+", " ", str(description or "")).strip()[:240]
+        if sound is None:
+            raise ValueError("Sound not found.")
+        if not description:
+            raise ValueError("Tell Sophia what the clip actually contains.")
+        with self.lock:
+            library = self._load_sound_library()
+            current = dict(library.get(sound["id"], {}))
+            current.update({
+                "status": "ready",
+                "description": description,
+                "use_when": (
+                    re.sub(r"\s+", " ", str(use_when)).strip()[:240]
+                    if use_when is not None else current.get("use_when", "")
+                ),
+                "transcript": (
+                    re.sub(r"\s+", " ", str(transcript)).strip()[:500]
+                    if transcript is not None else current.get("transcript", "")
+                ),
+                "description_source": source,
+                "corrected_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            current.pop("error", None)
+            library[sound["id"]] = current
+            self._save_sound_library(library)
+        return {"id": sound["id"], **current}
+
+    @staticmethod
+    def _sound_aliases(sound):
+        def normalize(value):
+            words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+            words = [word[:-1] if word.endswith("s") and len(word) > 3 else word for word in words]
+            return " ".join(words)
+
+        aliases = {
+            normalize(sound.get("name")),
+            normalize(Path(sound.get("id", "")).stem),
+        }
+        aliases.update(alias.removesuffix(" sound").strip() for alias in list(aliases))
+        if "erro" in aliases:
+            aliases.add("error")
+        return {alias for alias in aliases if alias}
+
+    def observe_sound_corrections(self, text):
+        """Persist plain-English corrections such as 'erro is the Windows error sound'."""
+        original = re.sub(r"[.!?]+$", "", str(text or "").strip())
+        if not original:
+            return []
+        sounds = self.list_sounds()
+        corrected = []
+
+        def normalize(value):
+            words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+            words = [word[:-1] if word.endswith("s") and len(word) > 3 else word for word in words]
+            return " ".join(words)
+
+        clauses = re.split(r"\s*(?:,|;|\band\b|\bbut\b)\s*", original, flags=re.IGNORECASE)
+        for clause in clauses:
+            match = re.match(
+                r"^(?:no\s+)?(?:the\s+)?(.+?)\s+(?:is|are|was|were)\s+"
+                r"(?:actually\s+)?(.+)$",
+                clause.strip(),
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            subject, description = match.groups()
+            normalized_subject = normalize(subject)
+            description = description.strip(" \"'")
+            if re.match(r"^(?:not|what|why|wrong)\b", description, re.IGNORECASE):
+                continue
+            sound = next(
+                (
+                    item for item in sounds
+                    if normalized_subject in self._sound_aliases(item)
+                ),
+                None,
+            )
+            if sound is None:
+                continue
+            use_when = "Use only when this literal sound matches the moment."
+            lowered = description.lower()
+            if "windows" in lowered and "error" in lowered:
+                use_when = "After an error, failed action, or obvious mistake; never as a victory fanfare."
+            elif "metal pipe" in lowered:
+                use_when = "For a sudden impact, collision, or absurd failure; never as a rimshot."
+            metadata = self.correct_sound_metadata(
+                sound["id"], description, use_when=use_when, source="user_voice",
+            )
+            corrected.append({"id": sound["id"], "description": metadata["description"]})
+
+        if not corrected and self.last_media_action and self.last_media_action.get("type") == "sound":
+            match = re.search(
+                r"(?:^|\bno[, —-]*)that(?: one)?\s+(?:is|was)\s+actually\s+(.+)$",
+                original,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                description = match.group(1).strip(" \"'")
+                metadata = self.correct_sound_metadata(
+                    self.last_media_action["id"], description,
+                    use_when="Use only when this literal sound matches the moment.",
+                    source="user_voice",
+                )
+                corrected.append({
+                    "id": self.last_media_action["id"],
+                    "description": metadata["description"],
+                })
+        return corrected
 
     def set_soundboard_handlers(self, analyzer, play, stop):
         self.sound_analyzer = analyzer
@@ -252,6 +394,7 @@ class DashboardHub:
                     "description": str(result.get("description", "Audio clip")).strip()[:240],
                     "use_when": str(result.get("use_when", "")).strip()[:240],
                     "transcript": str(result.get("transcript", "")).strip()[:500],
+                    "description_source": "audio_analysis",
                 }
             except Exception as exc:
                 metadata = {
@@ -556,11 +699,15 @@ class DashboardHub:
         return dict(self.youtube_state)
 
     def observe_media_feedback(self, text):
+        corrections = self.observe_sound_corrections(text)
         if self.memory_store is None or self.last_media_action is None:
-            return None
+            return {"corrections": corrections} if corrections else None
         action = dict(self.last_media_action)
         action["age_seconds"] = max(0, time.time() - action["time"])
-        return self.memory_store.observe_media_feedback(text, action)
+        feedback = self.memory_store.observe_media_feedback(text, action)
+        if corrections:
+            return {**(feedback or {}), "corrections": corrections}
+        return feedback
 
     def add_memory(self, payload):
         if self.memory_store is None:
@@ -805,6 +952,12 @@ class DashboardHub:
                     elif path == "/api/sound/play":
                         sound = hub.play_sound(payload.get("id"), "dashboard", payload.get("volume"))
                         self._json({"ok": True, "sound": sound})
+                    elif path == "/api/sound/describe":
+                        sound = hub.correct_sound_metadata(
+                            payload.get("id"), payload.get("description"),
+                            payload.get("use_when"), payload.get("transcript"),
+                        )
+                        self._json({"ok": True, "sound": sound})
                     elif path == "/api/sound/stop":
                         hub.stop_sound()
                         self._json({"ok": True})
@@ -843,6 +996,8 @@ class DashboardHub:
                             payload.get("log_path"), payload.get("player_name")
                         )
                         self._json({"ok": True, "settings": settings})
+                    elif path == "/api/budget/resume":
+                        self._json({"ok": True, "budget": hub.resume_budget()})
                     elif path == "/api/sleep":
                         hub.shutdown_event.set()
                         self._json({"ok": True})
