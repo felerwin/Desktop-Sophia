@@ -1,6 +1,9 @@
 import unittest
+import tempfile
+import threading
 from pathlib import Path
 
+from dashboard_server import DashboardHub
 from ember import BodyState, EmbodimentController, SpriteAtlas, WorldState
 from ember.overlay import direction_degrees
 from ember.telemetry import WowTelemetryAdapter
@@ -50,6 +53,19 @@ class EmberWorldStateTests(unittest.TestCase):
             "states": ["excited", "amused", "excited"],
             "reason": "level_up",
         }])
+
+    def test_dashboard_body_lab_uses_safe_presets(self):
+        received = []
+        with tempfile.TemporaryDirectory() as folder:
+            dashboard = DashboardHub(Path(folder), {}, threading.Event())
+            dashboard.set_body_test_handler(received.append)
+
+            result = dashboard.test_body("celebrate")
+
+        self.assertEqual(result["states"], ["excited", "amused", "excited"])
+        self.assertEqual(received, [["excited", "amused", "excited"]])
+        with self.assertRaises(ValueError):
+            dashboard.test_body("invented-animation")
 
 
 if __name__ == "__main__":
