@@ -42,6 +42,34 @@ FRAME_INTERVAL_MS = {
     "review": 320,
 }
 ONE_SHOT_ANIMATIONS = {"waving", "jumping", "failed"}
+POSE_INBETWEENS = {
+    "idle": 1,
+    "waving": 1,
+    "jumping": 1,
+    "failed": 1,
+    "waiting": 1,
+    "running": 1,
+    "review": 1,
+}
+TRAVEL_FRAME_REPEATS = 2
+
+
+def add_pose_inbetweens(
+    frames: list[Image.Image], count: int = 1, *, loop: bool = True
+) -> list[Image.Image]:
+    """Add cross-faded poses while preserving the original key frames exactly."""
+    if count <= 0 or len(frames) < 2:
+        return list(frames)
+    result: list[Image.Image] = []
+    pair_count = len(frames) if loop else len(frames) - 1
+    for index, frame in enumerate(frames):
+        result.append(frame)
+        if index >= pair_count:
+            continue
+        following = frames[(index + 1) % len(frames)]
+        for step in range(1, count + 1):
+            result.append(Image.blend(frame, following, step / (count + 1)))
+    return result
 
 
 class SpriteAtlas:
@@ -102,6 +130,7 @@ class EmberOverlay:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
+        self._frame_cache: dict[str, list[Image.Image]] = {}
         self.error: str | None = None
 
     def start(self, timeout: float = 5.0) -> bool:
@@ -249,7 +278,7 @@ class EmberOverlay:
                     dx, dy = target[0] - x, target[1] - y
                     distance = math.hypot(dx, dy)
                     if distance > 8:
-                        step = min(18.0, distance)
+                        step = min(9.0, distance)
                         x += int(round(dx / distance * step))
                         y += int(round(dy / distance * step))
                         desired = "running-right" if dx >= 0 else "running-left"
@@ -286,7 +315,7 @@ class EmberOverlay:
                             set_animation("idle")
                 photo = ImageTk.PhotoImage(frame)
                 label.configure(image=photo)
-                root.after(FRAME_INTERVAL_MS.get(animation, 280), tick)
+                root.after(self._frame_interval(animation, len(frames)), tick)
 
             self._ready.set()
             tick()
@@ -298,11 +327,30 @@ class EmberOverlay:
             self._stopped.set()
 
     def _scaled_frames(self, animation: str) -> list[Image.Image]:
+        cached = self._frame_cache.get(animation)
+        if cached is not None:
+            return cached
         frames = self.atlas.frames(animation)
-        if self.scale == 1.0:
-            return frames
-        size = (int(CELL_WIDTH * self.scale), int(CELL_HEIGHT * self.scale))
-        return [frame.resize(size, Image.Resampling.LANCZOS) for frame in frames]
+        if self.scale != 1.0:
+            size = (int(CELL_WIDTH * self.scale), int(CELL_HEIGHT * self.scale))
+            frames = [frame.resize(size, Image.Resampling.LANCZOS) for frame in frames]
+        if animation in {"running-right", "running-left"}:
+            frames = [frame for frame in frames for _ in range(TRAVEL_FRAME_REPEATS)]
+        else:
+            frames = add_pose_inbetweens(
+                frames,
+                POSE_INBETWEENS.get(animation, 0),
+                loop=animation not in ONE_SHOT_ANIMATIONS,
+            )
+        self._frame_cache[animation] = frames
+        return frames
+
+    @staticmethod
+    def _frame_interval(animation: str, rendered_count: int) -> int:
+        """Keep each animation's original cycle duration after adding subframes."""
+        source_count = FRAME_COUNTS.get(animation, rendered_count)
+        base_interval = FRAME_INTERVAL_MS.get(animation, 280)
+        return max(45, int(round(base_interval * source_count / rendered_count)))
 
     @staticmethod
     def _make_click_through(hwnd: int) -> None:
