@@ -65,6 +65,11 @@ def direction_degrees(dx: float, dy: float) -> float:
     return math.degrees(math.atan2(dx, -dy)) % 360
 
 
+def target_destination(target) -> tuple[int, int]:
+    """Return window coordinates from a target that may also carry focus metadata."""
+    return target[0], target[1]
+
+
 class EmberOverlay:
     """Owns a small Tk overlay on a dedicated UI thread."""
 
@@ -265,7 +270,7 @@ class EmberOverlay:
                             set_reaction(desired)
                         root.geometry(f"{width}x{height}+{x}+{y}")
                     else:
-                        x, y = target
+                        x, y = target_destination(target)
                         root.geometry(f"{width}x{height}+{x}+{y}")
                         if target_kind == "point":
                             look_angle = direction_degrees(

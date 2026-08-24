@@ -5,11 +5,15 @@ from pathlib import Path
 
 from dashboard_server import DashboardHub
 from ember import BodyState, EmbodimentController, ReactionImages, WorldState
-from ember.overlay import EmberOverlay, direction_degrees
+from ember.overlay import EmberOverlay, direction_degrees, target_destination
 from ember.telemetry import WowTelemetryAdapter
 
 
 class EmberWorldStateTests(unittest.TestCase):
+    def test_overlay_settles_at_destination_without_unpacking_focus_metadata(self):
+        self.assertEqual(target_destination((120, 340, 900, 500)), (120, 340))
+        self.assertEqual(target_destination((10, 20)), (10, 20))
+
     def test_semantic_adapter_deduplicates_replayed_context(self):
         world = WorldState()
         adapter = WowTelemetryAdapter(world)
