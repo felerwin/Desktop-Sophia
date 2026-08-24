@@ -317,18 +317,28 @@ class TTSWorker:
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
-                log_event("KOKORO_CHATTER", text=line[:300])
+                log_event("TTS_WORKER_OUTPUT", text=line[:300])
                 continue
             if isinstance(msg, dict) and msg.get("event") in wanted:
                 return msg
-            log_event("KOKORO_CHATTER", text=line[:300])
+            log_event("TTS_WORKER_OUTPUT", text=line[:300])
         raise RuntimeError("Chatterbox worker stopped before expected event.")
 
     def _start_worker(self):
         args = [self.python, "-u", str(self.helper), str(CONFIG.get("chatterbox_voice_reference", ""))]
+        worker_env = os.environ.copy()
+        local_cache = ROOT / ".cache"
+        local_model = local_cache / "huggingface" / "hub" / "models--ResembleAI--chatterbox-turbo"
+        if CONFIG.get("portable_mode", False) or local_model.is_dir():
+            # Resolve Chatterbox's cache here rather than relying on the batch
+            # launcher's optional .portable marker. A mismatched cache looks like
+            # an endless warmup while Hugging Face downloads the model again.
+            worker_env["HF_HOME"] = str(local_cache / "huggingface")
+            worker_env["XDG_CACHE_HOME"] = str(local_cache)
         self._proc = subprocess.Popen(
             args,
             cwd=str(ROOT),
+            env=worker_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             # Hugging Face and model loaders can emit enough progress output to

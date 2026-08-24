@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 .chatterbox_venv/
 .cache/
+.portable
 
 # Local companion state and personal configuration
 config.json
