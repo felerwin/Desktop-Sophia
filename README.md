@@ -39,6 +39,7 @@ does not replace `.env`, `config.json`, memory, logs, caches, or Python environm
 - A microphone for voice conversation
 - An OpenAI API key
 - An NVIDIA GPU with about 6 GB VRAM is recommended for Chatterbox Turbo.
+- Ember starts listening immediately while Chatterbox warms in the background.
 
 No Node.js installation is required to run Sophia; the compiled dashboard is
 included. Frontend developers can rebuild the source under `dashboard/`.

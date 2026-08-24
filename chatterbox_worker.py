@@ -21,7 +21,11 @@ def main():
         raise SystemExit(f"Chatterbox voice reference does not exist: {prompt_path}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = ChatterboxTurboTTS.from_pretrained(device=device)
+    try:
+        model = ChatterboxTurboTTS.from_pretrained(device=device)
+    except Exception as exc:
+        emit("ERROR", detail=f"Chatterbox startup failed: {exc}")
+        return
     emit("READY", voice="chatterbox-turbo", device=device)
 
     for line in sys.stdin:

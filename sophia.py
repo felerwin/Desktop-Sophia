@@ -331,7 +331,10 @@ class TTSWorker:
             cwd=str(ROOT),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Hugging Face and model loaders can emit enough progress output to
+            # fill an unread pipe and freeze startup. Startup failures are sent
+            # through the worker's JSON protocol instead.
+            stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
         )
@@ -443,9 +446,13 @@ class TTSWorker:
     def wait_ready(self, timeout=60):
         """Block startup until the configured engine can speak or has definitively failed."""
         if not self._ready.wait(timeout):
-            log_event("TTS_STARTUP_TIMEOUT", timeout_seconds=timeout)
+            log_event("TTS_STILL_WARMING", waited_seconds=timeout)
             return False
         return self._startup_error is None
+
+    @property
+    def startup_finished(self):
+        return self._ready.is_set()
 
     def stop(self):
         self._queue.put(self._STOP)
@@ -1530,10 +1537,12 @@ def main():
     tts_worker = TTSWorker()
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
     print("Warming up Sophia's voice...")
-    if tts_worker.wait_ready(float(CONFIG.get("tts_startup_timeout_seconds", 120))):
+    if tts_worker.wait_ready(float(CONFIG.get("tts_startup_block_seconds", 3))):
         greeting = str(CONFIG.get("startup_greeting", "I'm awake and ready, Tony.")).strip()
         if greeting:
             tts_worker.say(greeting, wait=True, timeout=15)
+    elif not tts_worker.startup_finished:
+        log_event("TTS_WARMING_BACKGROUND", detail="Ember is available while Chatterbox loads.")
     else:
         log_event("TTS_UNAVAILABLE", detail="Sophia will continue without spoken audio.")
     voice_listener = VoiceListener(client)
