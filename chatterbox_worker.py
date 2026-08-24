@@ -40,12 +40,22 @@ def main():
     prompt_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 and sys.argv[1] else None
     output_name = str(sys.argv[2]).strip() if len(sys.argv) > 2 else ""
     output_hostapi = str(sys.argv[3]).strip() if len(sys.argv) > 3 else ""
+    model_path = Path(sys.argv[4]).resolve() if len(sys.argv) > 4 and sys.argv[4] else None
     if prompt_path and not prompt_path.is_file():
         raise SystemExit(f"Chatterbox voice reference does not exist: {prompt_path}")
+    if model_path and not model_path.is_dir():
+        raise SystemExit(f"Chatterbox model snapshot does not exist: {model_path}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
-        model = ChatterboxTurboTTS.from_pretrained(device=device)
+        emit("STARTUP_STAGE", stage="loading_model", local=bool(model_path))
+        if model_path:
+            # from_pretrained() contacts Hugging Face even when every model file
+            # is cached. Loading the verified snapshot directly makes offline
+            # startup deterministic and avoids an indefinite warm-up.
+            model = ChatterboxTurboTTS.from_local(model_path, device=device)
+        else:
+            model = ChatterboxTurboTTS.from_pretrained(device=device)
     except Exception as exc:
         emit("ERROR", detail=f"Chatterbox startup failed: {exc}")
         return

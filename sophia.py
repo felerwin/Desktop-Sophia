@@ -325,15 +325,22 @@ class TTSWorker:
         raise RuntimeError("Chatterbox worker stopped before expected event.")
 
     def _start_worker(self):
+        local_cache = ROOT / ".cache"
+        local_model = local_cache / "huggingface" / "hub" / "models--ResembleAI--chatterbox-turbo"
+        snapshots = local_model / "snapshots"
+        local_snapshot = next((
+            path for path in sorted(snapshots.glob("*"), reverse=True)
+            if (path / "t3_turbo_v1.safetensors").is_file()
+            and (path / "s3gen_meanflow.safetensors").is_file()
+        ), None)
         args = [
             self.python, "-u", str(self.helper),
             str(CONFIG.get("chatterbox_voice_reference", "")),
             str(CONFIG.get("tts_output_device", "Speakers (2- Realtek(R) Audio)")),
             str(CONFIG.get("tts_output_hostapi", "Windows WASAPI")),
+            str(local_snapshot or ""),
         ]
         worker_env = os.environ.copy()
-        local_cache = ROOT / ".cache"
-        local_model = local_cache / "huggingface" / "hub" / "models--ResembleAI--chatterbox-turbo"
         if CONFIG.get("portable_mode", False) or local_model.is_dir():
             # Resolve Chatterbox's cache here rather than relying on the batch
             # launcher's optional .portable marker. A mismatched cache looks like
@@ -1463,7 +1470,7 @@ when you can locate it and put your spoken reply in POINT's say field.
         log_event("VOICE_SILENT", heard=transcript, note=content,
                   api_call_count=_api_call_count)
 
-    if kind != "SAY":
+    if not _tts_speaking.is_set():
         set_body_state(BodyState.IDLE, "direct_turn_complete")
 
     mem["recent_observations"] = mem["recent_observations"][-30:]
@@ -1911,7 +1918,7 @@ waiting for Tony to ask.
                 mem["recent_observations"].append({"time": stamp, "note": content})
                 log_event("SILENT", note=content, api_call_count=_api_call_count)
 
-            if kind != "SAY" or not gap_ok:
+            if not _tts_speaking.is_set():
                 set_body_state(BodyState.IDLE, "observation_complete")
 
             if autonomous_tool_used:
