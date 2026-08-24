@@ -325,7 +325,12 @@ class TTSWorker:
         raise RuntimeError("Chatterbox worker stopped before expected event.")
 
     def _start_worker(self):
-        args = [self.python, "-u", str(self.helper), str(CONFIG.get("chatterbox_voice_reference", ""))]
+        args = [
+            self.python, "-u", str(self.helper),
+            str(CONFIG.get("chatterbox_voice_reference", "")),
+            str(CONFIG.get("tts_output_device", "Speakers (2- Realtek(R) Audio)")),
+            str(CONFIG.get("tts_output_hostapi", "Windows WASAPI")),
+        ]
         worker_env = os.environ.copy()
         local_cache = ROOT / ".cache"
         local_model = local_cache / "huggingface" / "hub" / "models--ResembleAI--chatterbox-turbo"
@@ -351,7 +356,11 @@ class TTSWorker:
         msg = self._read_worker_event({"READY", "ERROR"})
         if msg.get("event") != "READY":
             raise RuntimeError(f"{self.engine.title()} worker startup error: " + str(msg.get("detail", msg)))
-        log_event("TTS_READY", engine=self.engine, voice=msg.get("voice", self.voice), device=msg.get("device"))
+        log_event(
+            "TTS_READY", engine=self.engine, voice=msg.get("voice", self.voice),
+            device=msg.get("device"), output_device=msg.get("output_device"),
+            output_hostapi=msg.get("output_hostapi"), output_rate=msg.get("output_rate"),
+        )
 
     def _run(self):
         try:

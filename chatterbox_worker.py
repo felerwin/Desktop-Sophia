@@ -9,14 +9,37 @@ import numpy as np
 import sounddevice as sd
 import torch
 from chatterbox.tts_turbo import ChatterboxTurboTTS
+from scipy.signal import resample_poly
 
 
 def emit(kind, **fields):
     print(json.dumps({"event": kind, **fields}, ensure_ascii=False), flush=True)
 
 
+def resolve_output_device(name_hint, hostapi_hint):
+    devices = sd.query_devices()
+    hostapis = sd.query_hostapis()
+    candidates = []
+    for index, device in enumerate(devices):
+        if int(device.get("max_output_channels", 0)) < 1:
+            continue
+        hostapi_name = str(hostapis[device["hostapi"]]["name"])
+        if name_hint and name_hint.casefold() not in str(device["name"]).casefold():
+            continue
+        if hostapi_hint and hostapi_hint.casefold() not in hostapi_name.casefold():
+            continue
+        candidates.append((index, device, hostapi_name))
+    if not candidates:
+        raise RuntimeError(
+            f"No output device matched name={name_hint!r}, hostapi={hostapi_hint!r}."
+        )
+    return candidates[0]
+
+
 def main():
     prompt_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 and sys.argv[1] else None
+    output_name = str(sys.argv[2]).strip() if len(sys.argv) > 2 else ""
+    output_hostapi = str(sys.argv[3]).strip() if len(sys.argv) > 3 else ""
     if prompt_path and not prompt_path.is_file():
         raise SystemExit(f"Chatterbox voice reference does not exist: {prompt_path}")
 
@@ -26,7 +49,20 @@ def main():
     except Exception as exc:
         emit("ERROR", detail=f"Chatterbox startup failed: {exc}")
         return
-    emit("READY", voice="chatterbox-turbo", device=device)
+    try:
+        output_index, output_info, output_api = resolve_output_device(output_name, output_hostapi)
+        output_rate = int(round(float(output_info["default_samplerate"])))
+        sd.check_output_settings(
+            device=output_index, channels=1, dtype="float32", samplerate=output_rate
+        )
+    except Exception as exc:
+        emit("ERROR", detail=f"Chatterbox output setup failed: {exc}")
+        return
+    emit(
+        "READY", voice="chatterbox-turbo", device=device,
+        output_device=output_info["name"], output_hostapi=output_api,
+        output_rate=output_rate,
+    )
 
     for line in sys.stdin:
         line = line.strip()
@@ -51,9 +87,11 @@ def main():
                 continue
 
             audio = np.asarray(audio, dtype=np.float32)
+            if output_rate != model.sr:
+                audio = resample_poly(audio, output_rate, model.sr).astype(np.float32)
             synthesis_seconds = time.perf_counter() - started
             playback_started = time.perf_counter()
-            sd.play(audio, model.sr)
+            sd.play(audio, output_rate, device=output_index)
             emit("AUDIO_START", synthesis_seconds=round(synthesis_seconds, 3))
             sd.wait()
             emit(
