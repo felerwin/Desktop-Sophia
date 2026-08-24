@@ -3,7 +3,6 @@
 __pycache__/
 *.pyc
 .venv/
-.kokoro_venv/
 .chatterbox_venv/
 .cache/
 

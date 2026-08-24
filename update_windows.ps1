@@ -46,7 +46,7 @@ if ($Current -ne $Target) {
 
 if (-not $SkipDependencyRefresh) {
     Write-Step "Refreshing application dependencies and validating Ember"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ProjectRoot\install_windows.ps1" -SkipKokoro
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ProjectRoot\install_windows.ps1"
     if ($LASTEXITCODE -ne 0) { throw "The code update succeeded, but dependency validation failed." }
 }
 

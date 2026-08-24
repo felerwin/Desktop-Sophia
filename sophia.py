@@ -282,55 +282,23 @@ except ImportError:
 class TTSWorker:
     _STOP = object()
 
-    VOICES = {
-        "1": ("Bella", "af_bella", "a"),
-        "2": ("Heart", "af_heart", "a"),
-        "3": ("Nova", "af_nova", "a"),
-        "4": ("Sky", "af_sky", "a"),
-        "5": ("Heart + Sky", "af_heart,af_sky", "a"),
-        "6": ("Emma", "bf_emma", "b"),
-        "7": ("Lily", "bf_lily", "b"),
-    }
-
     def __init__(self):
         self._queue = queue.Queue()
-        self.engine = str(CONFIG.get("tts_engine", "kokoro")).strip().lower()
-        self.speed = float(CONFIG.get("kokoro_speed", 1.0))
-        if self.engine == "chatterbox":
-            self.python = configured_python(
-                CONFIG.get("chatterbox_python"), ROOT / ".chatterbox_venv" / "Scripts" / "python.exe"
-            )
-            self.helper = ROOT / "chatterbox_worker.py"
-        else:
-            self.engine = "kokoro"
-            self.python = configured_python(
-                CONFIG.get("kokoro_python"),
-                Path.home() / "kokoro_env" / "Scripts" / "python.exe",
-            )
-            self.helper = ROOT / "kokoro_worker.py"
-        self.name, self.voice, self.lang = self._load_voice()
+        self.engine = "chatterbox"
+        self.python = configured_python(
+            CONFIG.get("chatterbox_python"), ROOT / ".chatterbox_venv" / "Scripts" / "python.exe"
+        )
+        self.helper = ROOT / "chatterbox_worker.py"
+        self.name = "Chatterbox Turbo"
+        self.voice = "chatterbox-turbo"
         self._proc = None
         self._ready = threading.Event()
         self._startup_error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def _load_voice(self):
-        saved = str(CONFIG.get("kokoro_voice", "af_heart"))
-        reverse = {voice: key for key, (_, voice, _) in self.VOICES.items()}
-        key = reverse.get(saved, "2")
-        name, voice, lang = self.VOICES[key]
-        CONFIG["kokoro_voice"] = voice
-        CONFIG["kokoro_language"] = lang
-        return name, voice, lang
-
     def change_voice(self, voice, language, name):
-        self._queue.put({
-            "command": "change_voice",
-            "voice": voice,
-            "language": language,
-            "name": name,
-        })
+        log_event("VOICE_CHANGE_IGNORED", engine=self.engine)
 
     def _read_worker_event(self, wanted):
         while self._proc and self._proc.poll() is None:
@@ -348,13 +316,10 @@ class TTSWorker:
             if isinstance(msg, dict) and msg.get("event") in wanted:
                 return msg
             log_event("KOKORO_CHATTER", text=line[:300])
-        raise RuntimeError("Kokoro worker stopped before expected event.")
+        raise RuntimeError("Chatterbox worker stopped before expected event.")
 
     def _start_worker(self):
-        if self.engine == "chatterbox":
-            args = [self.python, "-u", str(self.helper), str(CONFIG.get("chatterbox_voice_reference", ""))]
-        else:
-            args = [self.python, "-u", str(self.helper), self.voice, self.lang, str(self.speed)]
+        args = [self.python, "-u", str(self.helper), str(CONFIG.get("chatterbox_voice_reference", ""))]
         self._proc = subprocess.Popen(
             args,
             cwd=str(ROOT),
@@ -373,27 +338,10 @@ class TTSWorker:
         try:
             self._start_worker()
         except Exception as exc:
-            if self.engine == "chatterbox":
-                log_event("TTS_FALLBACK", failed_engine="chatterbox", detail=str(exc))
-                try:
-                    self.engine = "kokoro"
-                    self.python = configured_python(
-                        CONFIG.get("kokoro_python"),
-                        Path.home() / "kokoro_env" / "Scripts" / "python.exe",
-                    )
-                    self.helper = ROOT / "kokoro_worker.py"
-                    self._proc = None
-                    self._start_worker()
-                except Exception as fallback_exc:
-                    self._startup_error = str(fallback_exc)
-                    log_event("TTS_ERROR", detail=str(fallback_exc))
-                    self._ready.set()
-                    return
-            else:
-                self._startup_error = str(exc)
-                log_event("TTS_ERROR", detail=str(exc))
-                self._ready.set()
-                return
+            self._startup_error = str(exc)
+            log_event("TTS_ERROR", detail=str(exc))
+            self._ready.set()
+            return
         self._ready.set()
 
         while True:
@@ -402,34 +350,7 @@ class TTSWorker:
                 break
 
             if item.get("command") == "change_voice":
-                if self.engine != "kokoro":
-                    log_event("VOICE_CHANGE_IGNORED", engine=self.engine)
-                    continue
-                if _dashboard is not None:
-                    _dashboard.set_phase("warming", "Changing my voice…")
-                try:
-                    self._shutdown_worker()
-                    self._proc = None
-                    self.voice = item["voice"]
-                    self.lang = item["language"]
-                    self.name = item["name"]
-                    self._start_worker()
-                    log_event("VOICE_CHANGED", name=self.name, voice=self.voice)
-                    if CONFIG.get("speak_out_loud", True):
-                        item = {
-                            "text": f"This is {self.name}. How do I sound?",
-                            "timing": {},
-                            "done": None,
-                        }
-                    else:
-                        if _dashboard is not None:
-                            _dashboard.set_phase("listening", "I’m listening.")
-                        continue
-                except Exception as exc:
-                    log_event("VOICE_CHANGE_ERROR", detail=str(exc), voice=item.get("voice"))
-                    if _dashboard is not None:
-                        _dashboard.set_phase("error", "Voice change failed")
-                    continue
+                continue
 
             text = item["text"]
             timing = item.get("timing", {})
@@ -1571,7 +1492,7 @@ def main():
     tts_worker = TTSWorker()
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
     print("Warming up Sophia's voice...")
-    if tts_worker.wait_ready(float(CONFIG.get("kokoro_startup_timeout_seconds", 60))):
+    if tts_worker.wait_ready(float(CONFIG.get("tts_startup_timeout_seconds", 120))):
         greeting = str(CONFIG.get("startup_greeting", "I'm awake and ready, Tony.")).strip()
         if greeting:
             tts_worker.say(greeting, wait=True, timeout=15)

@@ -16,13 +16,7 @@ from urllib.parse import unquote
 
 
 VOICE_OPTIONS = [
-    {"name": "Bella", "voice": "af_bella", "language": "a"},
-    {"name": "Heart", "voice": "af_heart", "language": "a"},
-    {"name": "Nova", "voice": "af_nova", "language": "a"},
-    {"name": "Sky", "voice": "af_sky", "language": "a"},
-    {"name": "Heart + Sky", "voice": "af_heart,af_sky", "language": "a"},
-    {"name": "Emma", "voice": "bf_emma", "language": "b"},
-    {"name": "Lily", "voice": "bf_lily", "language": "b"},
+    {"name": "Chatterbox Turbo", "voice": "chatterbox-turbo", "language": "en"},
 ]
 
 class DashboardHub:
@@ -169,7 +163,7 @@ class DashboardHub:
                 "controls": controls,
                 "budget": budget,
                 "voice_options": VOICE_OPTIONS,
-                "selected_voice": self.config.get("kokoro_voice", "af_heart"),
+                "selected_voice": "chatterbox-turbo",
                 "microphone_options": self.microphone_options,
                 "selected_microphone": self.config.get("mic_device"),
                 "youtube": {
@@ -843,8 +837,7 @@ class DashboardHub:
         if match is None:
             raise ValueError("Unknown voice.")
         with self.lock:
-            self.config["kokoro_voice"] = match["voice"]
-            self.config["kokoro_language"] = match["language"]
+            self.config["tts_voice"] = match["voice"]
             config_path = self.root / "config.json"
             tmp_path = config_path.with_suffix(".tmp")
             tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")

@@ -2,7 +2,7 @@
 
 Desktop Ember is a Windows gaming companion that can watch the selected screen,
 listen through a microphone, converse through an OpenAI model, and speak locally
-with Kokoro. She has a local dashboard, long-term memory, a saved
+with Chatterbox Turbo. She has a local dashboard, long-term memory, a saved
 YouTube shelf, optional Spotify controls, and experimental World of Warcraft
 telemetry.
 
@@ -18,7 +18,7 @@ screenshots and transcripts needed for enabled model features.
 1. Download or clone this repository.
 2. Double-click `setup_windows.bat`.
 3. Let the installer download Python 3.12 and the required application, audio,
-   PyTorch, and Kokoro packages. The initial installation can take a while.
+   PyTorch, and Chatterbox packages. The initial installation can take a while.
 4. Add an OpenAI API key to the `.env` file that opens when setup finishes.
 5. Double-click `run_ember.bat`.
 
@@ -38,8 +38,7 @@ does not replace `.env`, `config.json`, memory, logs, caches, or Python environm
 - Internet access during installation and for OpenAI features
 - A microphone for voice conversation
 - An OpenAI API key
-- An NVIDIA GPU with about 6 GB VRAM is recommended for Chatterbox Turbo. If
-  Chatterbox cannot start, Ember automatically falls back to CPU-capable Kokoro.
+- An NVIDIA GPU with about 6 GB VRAM is recommended for Chatterbox Turbo.
 
 No Node.js installation is required to run Sophia; the compiled dashboard is
 included. Frontend developers can rebuild the source under `dashboard/`.
@@ -50,7 +49,7 @@ Starting Sophia opens a private local dashboard at:
 
 `http://127.0.0.1:8766/`
 
-The dashboard controls the microphone, Kokoro voice, screen awareness,
+The dashboard controls the microphone, Chatterbox voice, screen awareness,
 spontaneous remarks, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
