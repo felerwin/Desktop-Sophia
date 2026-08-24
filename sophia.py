@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, WorldState
+from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, VisualObservation, WorldState
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -18,6 +18,7 @@ from model_routing import hybrid_route
 from speech_filter import transcript_rejection_reason
 from spotify_control import SpotifyClient, SpotifyError
 from usage_costs import budget_decision, response_cost, transcription_cost
+from visual_context import parse_scene_envelope, scene_memory_note
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -93,11 +94,16 @@ Act like a friend watching a Discord gameplay stream:
 - Calibrate your language to confidence: state reliable telemetry directly; use
   "I think," "it looks like," or a question when the evidence is only visual.
 
-You must respond with EXACTLY one line, and nothing else, in one of these four forms:
+Normally respond with EXACTLY one action line in one of these four forms:
 SAY: <what you want to say aloud>
 SILENT: <a very short internal observation>
 VIDEO: {"action":"play","id":"exact saved video id","seconds":23}
 POINT: {"x":0.72,"y":0.35,"label":"quest objective","say":"There—that one."}
+
+When a screenshot-observation prompt explicitly requests a SCENE envelope, put one
+compact SCENE JSON line immediately before the action line. Do not use SCENE on direct
+conversation turns. Describe what is visually stable and what changed; keep uncertain
+inferences calibrated rather than filling missing details.
 
 POINT gives your desktop body deliberate control. x and y are normalized screenshot
 coordinates from 0.0 at the top/left to 1.0 at the bottom/right. Use POINT only when
@@ -812,6 +818,35 @@ def compact_context(mem):
     })
 
 
+def visual_context():
+    if _world_state is None:
+        return "No accumulated visual scene context yet."
+    snapshot = _world_state.snapshot(recent_events=4)
+    return json.dumps({
+        key: snapshot.get(key) for key in (
+            "game", "location", "activity", "visual_summary",
+            "visual_confidence", "screen_targets", "updated_at",
+        ) if snapshot.get(key) is not None
+    }, ensure_ascii=False)
+
+
+def apply_scene_context(scene, mem, stamp):
+    if not scene:
+        return
+    if _world_state is not None:
+        summary_parts = [scene.get("summary"), scene.get("continuity"), scene.get("change")]
+        _world_state.apply_visual(VisualObservation(
+            game=scene.get("game"), location=scene.get("location"),
+            activity=scene.get("activity"),
+            summary=" | ".join(part for part in summary_parts if part),
+            confidence=scene.get("confidence"), targets=scene.get("targets", []),
+        ))
+    note = scene_memory_note(scene)
+    if note:
+        mem["recent_observations"].append({"time": stamp, "note": note, "source": "vision"})
+    log_event("VISUAL_CONTEXT_UPDATED", **scene)
+
+
 def long_term_memory_context(query):
     if _memory_store is None or not CONFIG.get("long_term_memory", True):
         return "Long-term memory is disabled."
@@ -1260,6 +1295,9 @@ Tony just said aloud:
 Recent companion state:
 {compact_context(mem)}
 
+Accumulated visual scene context from earlier screenshots:
+{visual_context()}
+
 Relevant long-term memories (use only when genuinely relevant; never invent details):
 {long_term_memory_context(transcript)}
 
@@ -1696,6 +1734,9 @@ Current local time: {datetime.now().strftime('%H:%M:%S')}
 Approximate visual-change score since last sample: {change:.1f}
 Seconds since you last spoke: {int(silence)}
 
+Accumulated visual scene context from earlier screenshots:
+{visual_context()}
+
 Reaction policy for this decision:
 {reaction_mode}
 
@@ -1718,6 +1759,10 @@ Local World of Warcraft telemetry:
 {game_context()}
 
 Look at the screenshot. Decide whether there is something worth saying.
+First return exactly one compact semantic line in this form:
+SCENE: {{"game":"if recognizable","location":"if recognizable","activity":"what Tony is doing","summary":"important stable visual facts","continuity":"how this relates to the prior scene","change":"what meaningfully changed","confidence":0.0,"targets":[]}}
+Then return exactly one SAY, SILENT, VIDEO, or POINT action line. Use empty strings
+instead of inventing unknown fields. The scene is working memory, not spoken narration.
 Remember: quiet time makes curiosity more acceptable, but do not manufacture chatter.
 Treat VIDEO as an action you own, not an option requiring permission.
 When a saved video's use_when matches a new activity phase, start it now rather than
@@ -1748,7 +1793,9 @@ waiting for Tony to ask.
                 continue
 
             stamp = datetime.now().isoformat(timespec="seconds")
-            match = OUTPUT_LINE_RE.match(raw_out.strip()) if raw_out else None
+            scene, action_out = parse_scene_envelope(raw_out)
+            apply_scene_context(scene, mem, stamp)
+            match = OUTPUT_LINE_RE.match(action_out) if action_out else None
 
             if not match:
                 update_usage_outcome(
