@@ -6,9 +6,9 @@ with Kokoro. She has a local dashboard, long-term memory, a saved
 YouTube shelf, optional Spotify controls, and experimental World of Warcraft
 telemetry.
 
-Ember also has an optional transparent, always-on-top, click-through animated body.
-It uses the bundled v2 pet atlas and reacts locally to listening, thinking, speaking,
-and emotional body states without additional model calls.
+Ember also has an optional transparent, always-on-top, click-through body. Idle and
+walking use lightweight frame animation; listening, thinking, speaking, and emotional
+states switch between independent transparent PNG reaction images without extra model calls.
 
 The dashboard and companion data stay on the computer. OpenAI receives the
 screenshots and transcripts needed for enabled model features.
@@ -38,8 +38,8 @@ does not replace `.env`, `config.json`, memory, logs, caches, or Python environm
 - Internet access during installation and for OpenAI features
 - A microphone for voice conversation
 - An OpenAI API key
-- An NVIDIA GPU is recommended for faster local speech, but CPU Kokoro is
-  supported
+- An NVIDIA GPU with about 6 GB VRAM is recommended for Chatterbox Turbo. If
+  Chatterbox cannot start, Ember automatically falls back to CPU-capable Kokoro.
 
 No Node.js installation is required to run Sophia; the compiled dashboard is
 included. Frontend developers can rebuild the source under `dashboard/`.

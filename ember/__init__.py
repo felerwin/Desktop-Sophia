@@ -2,9 +2,9 @@
 
 from .core import HostCapabilities, SemanticEvent, VisualObservation, WorldState
 from .embodiment import BodyState, EmbodimentController, ScreenTarget
-from .overlay import EmberOverlay, SpriteAtlas
+from .overlay import EmberOverlay, ReactionImages
 
 __all__ = [
     "HostCapabilities", "SemanticEvent", "VisualObservation", "WorldState",
-    "BodyState", "EmbodimentController", "ScreenTarget", "EmberOverlay", "SpriteAtlas",
+    "BodyState", "EmbodimentController", "ScreenTarget", "EmberOverlay", "ReactionImages",
 ]

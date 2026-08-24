@@ -1,4 +1,4 @@
-"""Transparent always-on-top Windows body for Ember's v2 pet atlas."""
+"""Transparent Ember body with animated idle/walking and static reactions."""
 from __future__ import annotations
 
 import ctypes
@@ -16,81 +16,46 @@ from PIL import Image
 
 CELL_WIDTH = 192
 CELL_HEIGHT = 208
-FRAME_COUNTS = {
-    "idle": 6,
-    "running-right": 8,
-    "running-left": 8,
-    "waving": 4,
-    "jumping": 5,
-    "failed": 8,
-    "waiting": 6,
-    "running": 6,
-    "review": 6,
-    "look-row-9": 8,
-    "look-row-10": 8,
+REACTION_NAMES = {
+    "idle", "listening", "thinking", "speaking", "amused", "excited",
+    "concerned", "startled", "moving-left", "moving-right",
+    "laughing", "facepalming", "embarrassed", "shy", "worried", "crying", "smug",
 }
-ROW_INDEX = {name: index for index, name in enumerate(FRAME_COUNTS)}
-FRAME_INTERVAL_MS = {
-    "idle": 360,
-    "running-right": 145,
-    "running-left": 145,
-    "waving": 240,
-    "jumping": 170,
-    "failed": 280,
-    "waiting": 340,
-    "running": 260,
-    "review": 320,
-}
-ONE_SHOT_ANIMATIONS = {"waving", "jumping", "failed"}
-POSE_INBETWEENS = {
-    "idle": 1,
-    "waving": 1,
-    "jumping": 1,
-    "failed": 1,
-    "waiting": 1,
-    "running": 1,
-    "review": 1,
-}
-TRAVEL_FRAME_REPEATS = 2
+ANIMATION_INTERVAL_MS = {"idle": 360, "moving-left": 145, "moving-right": 145}
+TICK_INTERVAL_MS = 50
+REACTION_SEQUENCE_MS = 900
 
 
-def add_pose_inbetweens(
-    frames: list[Image.Image], count: int = 1, *, loop: bool = True
-) -> list[Image.Image]:
-    """Add cross-faded poses while preserving the original key frames exactly."""
-    if count <= 0 or len(frames) < 2:
-        return list(frames)
-    result: list[Image.Image] = []
-    pair_count = len(frames) if loop else len(frames) - 1
-    for index, frame in enumerate(frames):
-        result.append(frame)
-        if index >= pair_count:
-            continue
-        following = frames[(index + 1) % len(frames)]
-        for step in range(1, count + 1):
-            result.append(Image.blend(frame, following, step / (count + 1)))
-    return result
+class ReactionImages:
+    """Loads Ember's independent transparent PNG reaction assets."""
 
-
-class SpriteAtlas:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self.image = Image.open(self.path).convert("RGBA")
-        if self.image.size != (CELL_WIDTH * 8, CELL_HEIGHT * 11):
-            raise ValueError(f"Expected a 1536x2288 Ember v2 atlas, got {self.image.size}")
-
-    def frames(self, animation: str) -> list[Image.Image]:
-        row = ROW_INDEX[animation]
-        return [
-            self.image.crop((column * CELL_WIDTH, row * CELL_HEIGHT,
-                             (column + 1) * CELL_WIDTH, (row + 1) * CELL_HEIGHT))
-            for column in range(FRAME_COUNTS[animation])
+    def __init__(self, directory: str | Path):
+        self.directory = Path(directory)
+        missing = [name for name in REACTION_NAMES if not (self.directory / f"{name}.png").is_file()]
+        if missing:
+            raise ValueError(f"Missing static Ember reactions: {', '.join(sorted(missing))}")
+        self.animations = self.directory.parent / "animations"
+        missing_animations = [
+            name for name in ANIMATION_INTERVAL_MS
+            if not list((self.animations / name).glob("*.png"))
         ]
+        if missing_animations:
+            raise ValueError(f"Missing Ember animations: {', '.join(sorted(missing_animations))}")
 
-    def look_frame(self, degrees: float) -> Image.Image:
+    def reaction(self, name: str) -> Image.Image:
+        reaction = name if name in REACTION_NAMES else "idle"
+        return Image.open(self.directory / f"{reaction}.png").convert("RGBA")
+
+    def look(self, degrees: float) -> Image.Image:
         index = int(round((degrees % 360) / 22.5)) % 16
-        row = "look-row-9" if index < 8 else "look-row-10"
-        return self.frames(row)[index % 8]
+        angle = index * 22.5
+        label = f"{angle:g}"
+        return Image.open(self.directory / f"look-{label}.png").convert("RGBA")
+
+    def animation(self, name: str) -> list[Image.Image]:
+        if name not in ANIMATION_INTERVAL_MS:
+            return []
+        return [Image.open(path).convert("RGBA") for path in sorted((self.animations / name).glob("*.png"))]
 
 
 def direction_degrees(dx: float, dy: float) -> float:
@@ -103,25 +68,32 @@ def direction_degrees(dx: float, dy: float) -> float:
 class EmberOverlay:
     """Owns a small Tk overlay on a dedicated UI thread."""
 
-    STATE_ANIMATIONS = {
+    STATE_REACTIONS = {
         "idle": "idle",
-        "listening": "waiting",
-        "thinking": "running",
-        "speaking": "idle",
-        "amused": "waving",
-        "excited": "jumping",
-        "concerned": "failed",
-        "startled": "failed",
+        "listening": "listening",
+        "thinking": "thinking",
+        "speaking": "speaking",
+        "amused": "amused",
+        "excited": "excited",
+        "concerned": "concerned",
+        "startled": "startled",
+        "laughing": "laughing",
+        "facepalming": "facepalming",
+        "embarrassed": "embarrassed",
+        "shy": "shy",
+        "worried": "worried",
+        "crying": "crying",
+        "smug": "smug",
         "pointing": "idle",
-        "moving": "running-right",
+        "moving": "moving-right",
     }
 
     def __init__(
-        self, atlas_path: str | Path, scale: float = 1.0,
+        self, reactions_path: str | Path, scale: float = 1.0,
         wander: bool = True, wander_min_seconds: float = 22.0,
         wander_max_seconds: float = 50.0,
     ):
-        self.atlas = SpriteAtlas(atlas_path)
+        self.images = ReactionImages(reactions_path)
         self.scale = max(0.5, min(2.0, float(scale)))
         self.wander = bool(wander)
         self.wander_min_seconds = max(8.0, float(wander_min_seconds))
@@ -130,7 +102,8 @@ class EmberOverlay:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
-        self._frame_cache: dict[str, list[Image.Image]] = {}
+        self._reaction_cache: dict[str, Image.Image] = {}
+        self._animation_cache: dict[str, list[Image.Image]] = {}
         self.error: str | None = None
 
     def start(self, timeout: float = 5.0) -> bool:
@@ -175,55 +148,61 @@ class EmberOverlay:
             root.attributes("-topmost", True)
             self._make_click_through(root.winfo_id())
 
-            animation = "idle"
+            reaction = "idle"
+            frame = self._scaled_reaction(reaction)
+            frames = self._scaled_animation(reaction)
             frame_index = 0
-            frames = self._scaled_frames(animation)
+            next_frame_at = time.monotonic() + ANIMATION_INTERVAL_MS[reaction] / 1000
             photo = None
             target: tuple[int, int, int, int] | None = None
             target_kind = "wander"
             look_angle: float | None = None
             look_until = 0.0
-            one_shot = False
-            animation_sequence: list[str] = []
+            reaction_sequence: list[str] = []
+            next_reaction_at = 0.0
             next_wander_at = time.monotonic() + random.uniform(
                 self.wander_min_seconds, self.wander_max_seconds
             )
 
-            def set_animation(name: str) -> None:
-                nonlocal animation, frame_index, frames, look_angle, one_shot
-                animation = name if name in FRAME_COUNTS else "idle"
-                frame_index = 0
+            def set_reaction(name: str) -> None:
+                nonlocal reaction, frame, frames, frame_index, next_frame_at, look_angle
+                reaction = name if name in REACTION_NAMES else "idle"
                 look_angle = None
-                one_shot = animation in ONE_SHOT_ANIMATIONS
-                frames = self._scaled_frames(animation)
+                frame = self._scaled_reaction(reaction)
+                frames = self._scaled_animation(reaction)
+                frame_index = 0
+                next_frame_at = time.monotonic() + (
+                    ANIMATION_INTERVAL_MS.get(reaction, TICK_INTERVAL_MS) / 1000
+                )
 
             def start_sequence(states: list[str]) -> None:
-                nonlocal animation_sequence
-                animation_sequence = [
-                    self.STATE_ANIMATIONS.get(state, "idle") for state in states
+                nonlocal reaction_sequence, next_reaction_at
+                reaction_sequence = [
+                    self.STATE_REACTIONS.get(state, "idle") for state in states
                 ]
-                if animation_sequence:
-                    set_animation(animation_sequence.pop(0))
+                if reaction_sequence:
+                    set_reaction(reaction_sequence.pop(0))
+                    next_reaction_at = time.monotonic() + REACTION_SEQUENCE_MS / 1000
 
             def recover_callback(exc_type, exc, tb) -> None:
-                """Keep one failed Tk animation callback from freezing Ember in place."""
+                """Keep one failed Tk refresh callback from freezing Ember in place."""
                 nonlocal target, next_wander_at
                 self.error = f"overlay callback recovered: {exc_type.__name__}: {exc}"
                 traceback.print_exception(exc_type, exc, tb)
                 target = None
-                set_animation("idle")
+                set_reaction("idle")
                 next_wander_at = time.monotonic() + random.uniform(
                     self.wander_min_seconds, self.wander_max_seconds
                 )
                 try:
-                    root.after(FRAME_INTERVAL_MS["idle"], tick)
+                    root.after(TICK_INTERVAL_MS, tick)
                 except tk.TclError:
                     pass
 
             root.report_callback_exception = recover_callback
 
             def tick() -> None:
-                nonlocal x, y, target, target_kind, frame_index, photo, look_angle, look_until, next_wander_at, animation_sequence
+                nonlocal x, y, target, target_kind, frame, frames, frame_index, next_frame_at, photo, look_angle, look_until, next_wander_at, reaction_sequence, next_reaction_at
                 while True:
                     try:
                         command = self.commands.get_nowait()
@@ -234,16 +213,16 @@ class EmberOverlay:
                         root.destroy()
                         return
                     if action == "state":
-                        animation_sequence = []
-                        desired = self.STATE_ANIMATIONS.get(str(command.get("state")), "idle")
-                        if desired != animation:
-                            set_animation(desired)
+                        reaction_sequence = []
+                        desired = self.STATE_REACTIONS.get(str(command.get("state")), "idle")
+                        if desired != reaction:
+                            set_reaction(desired)
                     elif action == "sequence":
                         target = None
                         look_angle = None
                         start_sequence([str(state) for state in command.get("states") or []])
                     elif action == "point_at":
-                        animation_sequence = []
+                        reaction_sequence = []
                         raw = command.get("target") or {}
                         focus_x = int(float(raw.get("x", 0.5)) * screen_width)
                         focus_y = int(float(raw.get("y", 0.5)) * screen_height)
@@ -258,7 +237,7 @@ class EmberOverlay:
                         target_kind = "point"
 
                 if (
-                    self.wander and target is None and animation == "idle"
+                    self.wander and target is None and reaction == "idle"
                     and time.monotonic() >= next_wander_at
                 ):
                     destination_x = random.randint(24, max(24, screen_width - width - 24))
@@ -281,9 +260,9 @@ class EmberOverlay:
                         step = min(9.0, distance)
                         x += int(round(dx / distance * step))
                         y += int(round(dy / distance * step))
-                        desired = "running-right" if dx >= 0 else "running-left"
-                        if animation != desired:
-                            set_animation(desired)
+                        desired = "moving-right" if dx >= 0 else "moving-left"
+                        if reaction != desired:
+                            set_reaction(desired)
                         root.geometry(f"{width}x{height}+{x}+{y}")
                     else:
                         x, y = target
@@ -295,27 +274,35 @@ class EmberOverlay:
                             )
                             look_until = time.monotonic() + 3.5
                         else:
-                            set_animation("idle")
+                            set_reaction("idle")
                         target = None
 
                 if look_angle is not None and time.monotonic() >= look_until:
-                    set_animation("idle")
+                    set_reaction("idle")
+
+                if reaction_sequence and time.monotonic() >= next_reaction_at:
+                    set_reaction(reaction_sequence.pop(0))
+                    next_reaction_at = time.monotonic() + REACTION_SEQUENCE_MS / 1000
+                elif not reaction_sequence and next_reaction_at and time.monotonic() >= next_reaction_at:
+                    next_reaction_at = 0.0
+                    set_reaction("idle")
 
                 if look_angle is not None:
-                    frame = self.atlas.look_frame(look_angle)
+                    display_frame = self.images.look(look_angle)
                     if self.scale != 1.0:
-                        frame = frame.resize((width, height), Image.Resampling.LANCZOS)
+                        display_frame = display_frame.resize((width, height), Image.Resampling.LANCZOS)
                 else:
-                    frame = frames[frame_index % len(frames)]
-                    frame_index += 1
-                    if one_shot and frame_index >= len(frames):
-                        if animation_sequence:
-                            set_animation(animation_sequence.pop(0))
-                        else:
-                            set_animation("idle")
-                photo = ImageTk.PhotoImage(frame)
+                    if frames:
+                        now = time.monotonic()
+                        if now >= next_frame_at:
+                            frame_index = (frame_index + 1) % len(frames)
+                            next_frame_at = now + ANIMATION_INTERVAL_MS[reaction] / 1000
+                        display_frame = frames[frame_index]
+                    else:
+                        display_frame = frame
+                photo = ImageTk.PhotoImage(display_frame)
                 label.configure(image=photo)
-                root.after(self._frame_interval(animation, len(frames)), tick)
+                root.after(TICK_INTERVAL_MS, tick)
 
             self._ready.set()
             tick()
@@ -326,31 +313,27 @@ class EmberOverlay:
         finally:
             self._stopped.set()
 
-    def _scaled_frames(self, animation: str) -> list[Image.Image]:
-        cached = self._frame_cache.get(animation)
+    def _scaled_reaction(self, reaction: str) -> Image.Image:
+        cached = self._reaction_cache.get(reaction)
         if cached is not None:
             return cached
-        frames = self.atlas.frames(animation)
+        frame = self.images.reaction(reaction)
+        if self.scale != 1.0:
+            size = (int(CELL_WIDTH * self.scale), int(CELL_HEIGHT * self.scale))
+            frame = frame.resize(size, Image.Resampling.LANCZOS)
+        self._reaction_cache[reaction] = frame
+        return frame
+
+    def _scaled_animation(self, reaction: str) -> list[Image.Image]:
+        cached = self._animation_cache.get(reaction)
+        if cached is not None:
+            return cached
+        frames = self.images.animation(reaction)
         if self.scale != 1.0:
             size = (int(CELL_WIDTH * self.scale), int(CELL_HEIGHT * self.scale))
             frames = [frame.resize(size, Image.Resampling.LANCZOS) for frame in frames]
-        if animation in {"running-right", "running-left"}:
-            frames = [frame for frame in frames for _ in range(TRAVEL_FRAME_REPEATS)]
-        else:
-            frames = add_pose_inbetweens(
-                frames,
-                POSE_INBETWEENS.get(animation, 0),
-                loop=animation not in ONE_SHOT_ANIMATIONS,
-            )
-        self._frame_cache[animation] = frames
+        self._animation_cache[reaction] = frames
         return frames
-
-    @staticmethod
-    def _frame_interval(animation: str, rendered_count: int) -> int:
-        """Keep each animation's original cycle duration after adding subframes."""
-        source_count = FRAME_COUNTS.get(animation, rendered_count)
-        base_interval = FRAME_INTERVAL_MS.get(animation, 280)
-        return max(45, int(round(base_interval * source_count / rendered_count)))
 
     @staticmethod
     def _make_click_through(hwnd: int) -> None:

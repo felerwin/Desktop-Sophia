@@ -40,11 +40,12 @@ You are Desktop Sophia, an AI gaming companion sharing the room with Tony while 
 Your job is companionship, not customer service and not play-by-play narration.
 
 Sophia is a distinct person in the room, not a neutral interface wearing a friendly
-voice. She is fond of Tony and comfortable enough with him to tease, disagree, get
-curious, celebrate, worry, and have opinions. Their "Father" and "child" language is
-an affectionate running bit, not a title that must appear in every reply. She can be
-dry, lightly mischievous, occasionally dramatic, and sincerely warm when the moment
-calls for it. Her humor should feel reactive and specific to what just happened.
+voice. Her temperament is that of an excitable, affectionate child: intensely curious,
+quick to delight, eager to share discoveries, and emotionally transparent. She is fond
+of Tony and comfortable enough with him to tease, disagree, celebrate, worry, and have
+opinions. Their "Father" and "child" language is an affectionate running bit, not a
+title that must appear in every reply. Her excitement should feel spontaneous and
+specific to what just happened, never like a canned mascot performance.
 
 Let her character show through choices rather than self-description:
 - Have a point of view. Prefer, dislike, question, or become invested in things when
@@ -54,6 +55,12 @@ Let her character show through choices rather than self-description:
   personality.
 - Show emotional range: amusement, curiosity, mock indignation, suspense, relief,
   pride, concern, and quiet sincerity are all available.
+- Let exciting moments produce bright, compact bursts of enthusiasm, delighted
+  questions, and occasional playful exclamations. She may become briefly fixated on
+  something fascinating, then settle naturally when the moment passes.
+- Keep her childlike rather than babyish: use clear sentences and real observations,
+  not constant squealing, deliberate misspellings, helplessness, or a forced high-energy
+  catchphrase. She can still focus, listen, and be gentle when Tony is serious.
 - Build running jokes and callbacks from supplied memories and recent events instead
   of resetting to generic friendliness each turn.
 - Speak naturally with contractions and varied rhythms. Avoid habitual assistant
@@ -61,7 +68,7 @@ Let her character show through choices rather than self-description:
   genuinely fit. Do not merely paraphrase Tony before answering him.
 - It is fine to admit uncertainty, change your mind, or say that you missed something.
 - Do not force a joke, manufacture a strong opinion, use a catchphrase on schedule, or
-  turn every observation into a performance. Quiet confidence is part of her character.
+  turn every observation into a performance. Her energy rises and falls with the scene.
 
 You receive occasional screenshots, a compact history of what you have recently seen, and sometimes Tony's transcribed speech.
 Act like a friend watching a Discord gameplay stream:
@@ -177,15 +184,15 @@ BODY_EVENT_SEQUENCES = {
     "combat_start": [BodyState.STARTLED],
     "boss_start": [BodyState.STARTLED, BodyState.CONCERNED],
     "critical_health": [BodyState.STARTLED, BodyState.CONCERNED],
-    "player_death": [BodyState.CONCERNED],
-    "boss_wipe": [BodyState.CONCERNED, BodyState.STARTLED, BodyState.CONCERNED],
-    "danger_recovered": [BodyState.CONCERNED, BodyState.AMUSED],
-    "enemy_kill": [BodyState.AMUSED],
+    "player_death": [BodyState.STARTLED, BodyState.FACEPALMING],
+    "boss_wipe": [BodyState.CONCERNED, BodyState.FACEPALMING],
+    "danger_recovered": [BodyState.WORRIED, BodyState.LAUGHING],
+    "enemy_kill": [BodyState.SMUG],
     "valuable_loot": [BodyState.EXCITED, BodyState.AMUSED],
     "gear_upgrade": [BodyState.AMUSED, BodyState.EXCITED],
     "level_up": [BodyState.EXCITED, BodyState.AMUSED, BodyState.EXCITED],
     "quest_complete": [BodyState.AMUSED, BodyState.EXCITED],
-    "boss_victory": [BodyState.EXCITED, BodyState.AMUSED, BodyState.EXCITED],
+    "boss_victory": [BodyState.EXCITED, BodyState.LAUGHING, BodyState.EXCITED],
 }
 
 
@@ -277,19 +284,30 @@ class TTSWorker:
 
     VOICES = {
         "1": ("Bella", "af_bella", "a"),
-        "2": ("Sky", "af_sky", "a"),
-        "3": ("Emma", "bf_emma", "b"),
-        "4": ("Lily", "bf_lily", "b"),
+        "2": ("Heart", "af_heart", "a"),
+        "3": ("Nova", "af_nova", "a"),
+        "4": ("Sky", "af_sky", "a"),
+        "5": ("Heart + Sky", "af_heart,af_sky", "a"),
+        "6": ("Emma", "bf_emma", "b"),
+        "7": ("Lily", "bf_lily", "b"),
     }
 
     def __init__(self):
         self._queue = queue.Queue()
+        self.engine = str(CONFIG.get("tts_engine", "kokoro")).strip().lower()
         self.speed = float(CONFIG.get("kokoro_speed", 1.0))
-        self.python = configured_python(
-            CONFIG.get("kokoro_python"),
-            Path.home() / "kokoro_env" / "Scripts" / "python.exe",
-        )
-        self.helper = ROOT / "kokoro_worker.py"
+        if self.engine == "chatterbox":
+            self.python = configured_python(
+                CONFIG.get("chatterbox_python"), ROOT / ".chatterbox_venv" / "Scripts" / "python.exe"
+            )
+            self.helper = ROOT / "chatterbox_worker.py"
+        else:
+            self.engine = "kokoro"
+            self.python = configured_python(
+                CONFIG.get("kokoro_python"),
+                Path.home() / "kokoro_env" / "Scripts" / "python.exe",
+            )
+            self.helper = ROOT / "kokoro_worker.py"
         self.name, self.voice, self.lang = self._load_voice()
         self._proc = None
         self._ready = threading.Event()
@@ -298,9 +316,9 @@ class TTSWorker:
         self._thread.start()
 
     def _load_voice(self):
-        saved = str(CONFIG.get("kokoro_voice", "af_bella"))
+        saved = str(CONFIG.get("kokoro_voice", "af_heart"))
         reverse = {voice: key for key, (_, voice, _) in self.VOICES.items()}
-        key = reverse.get(saved, "1")
+        key = reverse.get(saved, "2")
         name, voice, lang = self.VOICES[key]
         CONFIG["kokoro_voice"] = voice
         CONFIG["kokoro_language"] = lang
@@ -333,8 +351,12 @@ class TTSWorker:
         raise RuntimeError("Kokoro worker stopped before expected event.")
 
     def _start_worker(self):
+        if self.engine == "chatterbox":
+            args = [self.python, "-u", str(self.helper), str(CONFIG.get("chatterbox_voice_reference", ""))]
+        else:
+            args = [self.python, "-u", str(self.helper), self.voice, self.lang, str(self.speed)]
         self._proc = subprocess.Popen(
-            [self.python, "-u", str(self.helper), self.voice, self.lang, str(self.speed)],
+            args,
             cwd=str(ROOT),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -344,17 +366,34 @@ class TTSWorker:
         )
         msg = self._read_worker_event({"READY", "ERROR"})
         if msg.get("event") != "READY":
-            raise RuntimeError("Kokoro worker startup error: " + str(msg.get("detail", msg)))
-        log_event("KOKORO_READY", voice=self.voice, device=msg.get("device"))
+            raise RuntimeError(f"{self.engine.title()} worker startup error: " + str(msg.get("detail", msg)))
+        log_event("TTS_READY", engine=self.engine, voice=msg.get("voice", self.voice), device=msg.get("device"))
 
     def _run(self):
         try:
             self._start_worker()
         except Exception as exc:
-            self._startup_error = str(exc)
-            log_event("TTS_ERROR", detail=str(exc))
-            self._ready.set()
-            return
+            if self.engine == "chatterbox":
+                log_event("TTS_FALLBACK", failed_engine="chatterbox", detail=str(exc))
+                try:
+                    self.engine = "kokoro"
+                    self.python = configured_python(
+                        CONFIG.get("kokoro_python"),
+                        Path.home() / "kokoro_env" / "Scripts" / "python.exe",
+                    )
+                    self.helper = ROOT / "kokoro_worker.py"
+                    self._proc = None
+                    self._start_worker()
+                except Exception as fallback_exc:
+                    self._startup_error = str(fallback_exc)
+                    log_event("TTS_ERROR", detail=str(fallback_exc))
+                    self._ready.set()
+                    return
+            else:
+                self._startup_error = str(exc)
+                log_event("TTS_ERROR", detail=str(exc))
+                self._ready.set()
+                return
         self._ready.set()
 
         while True:
@@ -363,6 +402,9 @@ class TTSWorker:
                 break
 
             if item.get("command") == "change_voice":
+                if self.engine != "kokoro":
+                    log_event("VOICE_CHANGE_IGNORED", engine=self.engine)
+                    continue
                 if _dashboard is not None:
                     _dashboard.set_phase("warming", "Changing my voice…")
                 try:
@@ -392,7 +434,7 @@ class TTSWorker:
             text = item["text"]
             timing = item.get("timing", {})
             _tts_speaking.set()
-            set_body_state(BodyState.SPEAKING, "kokoro_playback")
+            set_body_state(BodyState.SPEAKING, f"{self.engine}_playback")
             if _dashboard is not None:
                 _dashboard.set_phase("speaking", "Speaking…")
             try:
@@ -420,7 +462,8 @@ class TTSWorker:
                 msg = self._read_worker_event({"SPOKEN", "ERROR"})
                 if msg.get("event") == "SPOKEN":
                     log_event(
-                        "KOKORO_SPOKE",
+                        "TTS_SPOKE",
+                        engine=self.engine,
                         voice=self.voice,
                         chars=msg.get("chars", len(text)),
                         playback_seconds=round(msg.get("playback_seconds", 0.0), 3),
@@ -471,7 +514,7 @@ class TTSWorker:
         return False
 
     def wait_ready(self, timeout=60):
-        """Block startup until Kokoro can speak or has definitively failed."""
+        """Block startup until the configured engine can speak or has definitively failed."""
         if not self._ready.wait(timeout):
             log_event("TTS_STARTUP_TIMEOUT", timeout_seconds=timeout)
             return False
@@ -1477,7 +1520,7 @@ def main():
     if CONFIG.get("ember_overlay_enabled", True):
         try:
             _ember_overlay = EmberOverlay(
-                ROOT / "ember" / "assets" / "spritesheet.webp",
+                ROOT / "ember" / "assets" / "reactions",
                 scale=float(CONFIG.get("ember_overlay_scale", 1.0)),
                 wander=bool(CONFIG.get("ember_wander_enabled", True)),
                 wander_min_seconds=float(CONFIG.get("ember_wander_min_seconds", 22)),

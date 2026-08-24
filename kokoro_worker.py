@@ -5,8 +5,21 @@ import numpy as np
 import sounddevice as sd
 import torch
 from kokoro import KPipeline
+from speech_naturalizer import normalize_spoken_text
 
 SAMPLE_RATE = 24000
+EDGE_FADE_MS = 7
+
+
+def soften_edges(audio):
+    """Apply a tiny fade to prevent clicks where independently voiced phrases join."""
+    audio = np.asarray(audio, dtype=np.float32)
+    fade_samples = min(int(SAMPLE_RATE * EDGE_FADE_MS / 1000), len(audio) // 2)
+    if fade_samples:
+        ramp = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        audio[:fade_samples] *= ramp
+        audio[-fade_samples:] *= ramp[::-1]
+    return audio
 
 def emit(kind, **fields):
     print(json.dumps({"event": kind, **fields}, ensure_ascii=False), flush=True)
@@ -43,13 +56,19 @@ def main():
 
             synthesis_started_at = time.perf_counter()
             chunks = []
-            for result in pipeline(text, voice=voice, speed=speed):
+            spoken_text = normalize_spoken_text(text)
+            # Keep the utterance intact. Kokoro's tokenizer uses punctuation to shape
+            # a continuous prosody contour; synthesizing every sentence separately
+            # resets that contour and produces a conspicuously regular cadence.
+            for result in pipeline(
+                spoken_text, voice=voice, speed=speed, split_pattern=None
+            ):
                 audio = getattr(result, "audio", None)
                 if audio is None:
                     _, _, audio = result
                 if hasattr(audio, "detach"):
                     audio = audio.detach().cpu().numpy()
-                chunks.append(np.asarray(audio, dtype=np.float32))
+                chunks.append(soften_edges(audio))
 
             if not chunks:
                 emit("ERROR", detail="Kokoro generated no audio.")

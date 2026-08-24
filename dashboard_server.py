@@ -17,7 +17,10 @@ from urllib.parse import unquote
 
 VOICE_OPTIONS = [
     {"name": "Bella", "voice": "af_bella", "language": "a"},
+    {"name": "Heart", "voice": "af_heart", "language": "a"},
+    {"name": "Nova", "voice": "af_nova", "language": "a"},
     {"name": "Sky", "voice": "af_sky", "language": "a"},
+    {"name": "Heart + Sky", "voice": "af_heart,af_sky", "language": "a"},
     {"name": "Emma", "voice": "bf_emma", "language": "b"},
     {"name": "Lily", "voice": "bf_lily", "language": "b"},
 ]
@@ -166,7 +169,7 @@ class DashboardHub:
                 "controls": controls,
                 "budget": budget,
                 "voice_options": VOICE_OPTIONS,
-                "selected_voice": self.config.get("kokoro_voice", "af_bella"),
+                "selected_voice": self.config.get("kokoro_voice", "af_heart"),
                 "microphone_options": self.microphone_options,
                 "selected_microphone": self.config.get("mic_device"),
                 "youtube": {
@@ -722,6 +725,12 @@ class DashboardHub:
             "jump": ["excited"],
             "worry": ["concerned"],
             "startle": ["startled"],
+            "laugh": ["laughing"],
+            "facepalm": ["facepalming"],
+            "embarrassed": ["embarrassed"],
+            "shy": ["shy"],
+            "cry": ["crying"],
+            "smug": ["smug"],
             "celebrate": ["excited", "amused", "excited"],
             "meltdown": ["concerned", "startled", "concerned"],
         }

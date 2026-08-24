@@ -3,11 +3,9 @@ import tempfile
 import threading
 from pathlib import Path
 
-from PIL import Image
-
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, SpriteAtlas, WorldState
-from ember.overlay import EmberOverlay, add_pose_inbetweens, direction_degrees
+from ember import BodyState, EmbodimentController, ReactionImages, WorldState
+from ember.overlay import EmberOverlay, direction_degrees
 from ember.telemetry import WowTelemetryAdapter
 
 
@@ -32,11 +30,16 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(snapshot["location"], "Eversong Woods")
         self.assertEqual(len(snapshot["recent_events"]), 1)
 
-    def test_overlay_atlas_exposes_animation_rows_and_look_directions(self):
-        atlas = SpriteAtlas(Path(__file__).parent / "ember" / "assets" / "spritesheet.webp")
-        self.assertEqual(len(atlas.frames("idle")), 6)
-        self.assertEqual(len(atlas.frames("running-right")), 8)
-        self.assertEqual(atlas.look_frame(270).size, (192, 208))
+    def test_overlay_loads_independent_static_reactions_and_look_directions(self):
+        images = ReactionImages(Path(__file__).parent / "ember" / "assets" / "reactions")
+        self.assertEqual(images.reaction("idle").size, (192, 208))
+        self.assertEqual(images.reaction("amused").size, (192, 208))
+        self.assertEqual(images.reaction("laughing").size, (192, 208))
+        self.assertEqual(images.reaction("facepalming").size, (192, 208))
+        self.assertEqual(images.look(270).size, (192, 208))
+        self.assertEqual(len(images.animation("idle")), 6)
+        self.assertEqual(len(images.animation("moving-left")), 8)
+        self.assertEqual(len(images.animation("moving-right")), 8)
 
     def test_screen_deltas_use_clockwise_up_zero_directions(self):
         self.assertEqual(direction_degrees(0, -1), 0)
@@ -44,22 +47,7 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(direction_degrees(0, 1), 180)
         self.assertEqual(direction_degrees(-1, 0), 270)
 
-    def test_pose_inbetweens_preserve_keyframes_and_add_blended_frames(self):
-        black = Image.new("RGBA", (1, 1), (0, 0, 0, 255))
-        white = Image.new("RGBA", (1, 1), (255, 255, 255, 255))
-
-        frames = add_pose_inbetweens([black, white], count=1, loop=False)
-
-        self.assertEqual(len(frames), 3)
-        self.assertEqual(frames[0].getpixel((0, 0)), (0, 0, 0, 255))
-        self.assertEqual(frames[1].getpixel((0, 0)), (127, 127, 127, 255))
-        self.assertEqual(frames[2].getpixel((0, 0)), (255, 255, 255, 255))
-
-    def test_added_frames_keep_original_animation_duration(self):
-        self.assertEqual(EmberOverlay._frame_interval("idle", 12), 180)
-        self.assertEqual(EmberOverlay._frame_interval("running-right", 16), 72)
-
-    def test_embodiment_emits_animation_choreography(self):
+    def test_embodiment_emits_static_reaction_sequence(self):
         commands = []
         body = EmbodimentController(commands.append)
 

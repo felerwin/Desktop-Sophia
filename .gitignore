@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .venv/
 .kokoro_venv/
+.chatterbox_venv/
+.cache/
 
 # Local companion state and personal configuration
 config.json
@@ -14,6 +16,7 @@ session_log.jsonl
 youtube_library.json
 
 # User-provided media stays local
+ember_chatterbox_sample.wav
 
 # Frontend build/install output
 dashboard/node_modules/

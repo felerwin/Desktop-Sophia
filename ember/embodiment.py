@@ -1,8 +1,4 @@
-"""Semantic body interface for Ember.
-
-The brain requests intent; this controller chooses body behavior. No API call should
-be required for blinking, idling, walking, or synchronizing speech animation.
-"""
+"""Semantic body interface for Ember's movement and reaction poses."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +15,13 @@ class BodyState(str, Enum):
     EXCITED = "excited"
     CONCERNED = "concerned"
     STARTLED = "startled"
+    LAUGHING = "laughing"
+    FACEPALMING = "facepalming"
+    EMBARRASSED = "embarrassed"
+    SHY = "shy"
+    WORRIED = "worried"
+    CRYING = "crying"
+    SMUG = "smug"
     POINTING = "pointing"
     MOVING = "moving"
 

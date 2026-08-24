@@ -71,7 +71,7 @@ export default function Home() {
         <aside className="rail">
           <article className="panel controls">
             <div className="panelHeader"><div><p className="eyebrow">BEHAVIOR</p><h3>Autonomy</h3></div></div>
-            <div className="deviceControl"><label htmlFor="voiceSelector"><span><strong>Sophia’s voice</strong><small>Changes live after the current sentence</small></span></label><select id="voiceSelector" defaultValue="bf_lily"><option value="af_bella">Bella</option><option value="af_sky">Sky</option><option value="bf_emma">Emma</option><option value="bf_lily">Lily</option></select></div>
+            <div className="deviceControl"><label htmlFor="voiceSelector"><span><strong>Sophia’s voice</strong><small>Changes live after the current sentence</small></span></label><select id="voiceSelector" defaultValue="bf_lily"><option value="af_bella">Bella</option><option value="af_heart">Heart</option><option value="af_nova">Nova</option><option value="af_sky">Sky</option><option value="af_heart,af_sky">Heart + Sky</option><option value="bf_emma">Emma</option><option value="bf_lily">Lily</option></select></div>
             <div className="deviceControl"><label htmlFor="microphoneSelector"><span><strong>Input microphone</strong><small>Reconnects the listener live</small></span></label><select id="microphoneSelector" defaultValue="3"><option value="1">HD Pro Webcam C920</option><option value="3">H510-PRO Wireless</option></select></div>
             <label><span><strong>Speak aloud</strong><small>Local Kokoro voice</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Screen awareness</strong><small>Notice meaningful changes</small></span><input type="checkbox" defaultChecked /></label>
