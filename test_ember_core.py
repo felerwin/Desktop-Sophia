@@ -4,12 +4,18 @@ import threading
 from pathlib import Path
 
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, ReactionImages, WorldState
+from ember import BodyState, EmbodimentController, ReactionImages, WorldState, body_state_for_speech
 from ember.overlay import EmberOverlay, direction_degrees, target_destination
 from ember.telemetry import WowTelemetryAdapter
 
 
 class EmberWorldStateTests(unittest.TestCase):
+    def test_spoken_lines_choose_conversational_emotes(self):
+        self.assertEqual(body_state_for_speech("That is hilarious."), BodyState.LAUGHING)
+        self.assertEqual(body_state_for_speech("I told you that would work."), BodyState.SMUG)
+        self.assertEqual(body_state_for_speech("Careful, your health is low."), BodyState.WORRIED)
+        self.assertEqual(body_state_for_speech("Here is the answer."), BodyState.SPEAKING)
+
     def test_overlay_settles_at_destination_without_unpacking_focus_metadata(self):
         self.assertEqual(target_destination((120, 340, 900, 500)), (120, 340))
         self.assertEqual(target_destination((10, 20)), (10, 20))

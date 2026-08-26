@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import Callable
 
 
@@ -24,6 +25,30 @@ class BodyState(str, Enum):
     SMUG = "smug"
     POINTING = "pointing"
     MOVING = "moving"
+
+
+def body_state_for_speech(text: str) -> BodyState:
+    """Choose a readable conversational pose while Ember delivers a line."""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    rules = (
+        (BodyState.LAUGHING, r"\b(?:haha|hahaha|lmao|rofl|hilarious|cracking me up)\b"),
+        (BodyState.FACEPALMING, r"\b(?:facepalm|oh god|oh no|seriously|what a mess)\b"),
+        (BodyState.EMBARRASSED, r"\b(?:embarrass|awkward|blush|mortif)\w*\b"),
+        (BodyState.SHY, r"\b(?:love you|sweet of you|flatter|adorable)\w*\b"),
+        (BodyState.WORRIED, r"\b(?:careful|danger|worried|worry|hurt|health|dying)\b"),
+        (BodyState.CRYING, r"\b(?:crying|heartbroken|devastat|so sad)\w*\b"),
+        (BodyState.STARTLED, r"\b(?:whoa|woah|holy|what the|startled|scared me)\b"),
+        (BodyState.SMUG, r"\b(?:told you|called it|knew it|obviously|as expected)\b"),
+        (BodyState.EXCITED, r"\b(?:awesome|amazing|excellent|victory|level up|congrat|hell yes)\w*\b"),
+        (BodyState.AMUSED, r"\b(?:funny|cute|nice|hehe|teasing|gremlin|good one)\b"),
+        (BodyState.CONCERNED, r"\b(?:sorry|problem|error|failed|wrong|rough)\b"),
+    )
+    for state, pattern in rules:
+        if re.search(pattern, normalized):
+            return state
+    if normalized.endswith("!"):
+        return BodyState.EXCITED
+    return BodyState.SPEAKING
 
 
 @dataclass

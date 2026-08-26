@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, VisualObservation, WorldState
+from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, VisualObservation, WorldState, body_state_for_speech
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -420,8 +420,11 @@ class TTSWorker:
 
             text = item["text"]
             timing = item.get("timing", {})
+            speech_state = item.get("body_state", BodyState.SPEAKING)
             _tts_speaking.set()
-            set_body_state(BodyState.SPEAKING, f"{self.engine}_playback")
+            set_body_state(speech_state, f"{self.engine}_playback")
+            if speech_state != BodyState.SPEAKING:
+                log_event("BODY_SPEECH_REACTION", state=speech_state.value, text=text[:120])
             if _dashboard is not None:
                 _dashboard.set_phase("speaking", "Speaking…")
             try:
@@ -491,12 +494,17 @@ class TTSWorker:
                     pass
         self._proc = None
 
-    def say(self, text, timing=None, wait=False, timeout=None):
+    def say(self, text, timing=None, wait=False, timeout=None, body_state=None):
         if CONFIG.get("speak_out_loud", True):
             timing = dict(timing or {})
             timing["queued_at"] = time.perf_counter()
             done = threading.Event() if wait else None
-            self._queue.put({"text": text, "timing": timing, "done": done})
+            self._queue.put({
+                "text": text,
+                "timing": timing,
+                "done": done,
+                "body_state": body_state or body_state_for_speech(text),
+            })
             if done is not None:
                 return done.wait(timeout)
         return False
@@ -1646,7 +1654,7 @@ def main():
     # Start tool-favored so the first autonomous opportunity demonstrates
     # ownership instead of defaulting to another spoken observation.
     autonomous_non_tool_streak = int(
-        CONFIG.get("autonomous_tool_after_non_tool_turns", 1)
+        CONFIG.get("autonomous_tool_after_non_tool_turns", 4)
     )
 
     log_event(
@@ -1768,10 +1776,10 @@ def main():
                 continue
 
             available_youtube = _dashboard.youtube_context(spontaneous=True)
-            tool_after = max(1, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 1)))
-            tool_turn = (bool(game_event) or autonomous_non_tool_streak >= tool_after) and bool(
-                available_youtube.get("videos")
-            )
+            tool_after = max(2, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 4)))
+            tool_turn = (
+                bool(game_event) or (interesting_change and autonomous_non_tool_streak >= tool_after)
+            ) and bool(available_youtube.get("videos"))
             route = hybrid_route(
                 tool_turn=tool_turn,
                 has_game_event=bool(game_event),
@@ -1819,9 +1827,9 @@ genuine new activity transition and never replace or resume a video already
 playing or paused. Otherwise use SILENT.
 """
             else:
-                reaction_mode = """
+                reaction_mode = f"""
 OPEN TURN: SAY, POINT, and SILENT are available. VIDEO wins when it clearly fits
-a larger activity transition.
+a larger activity transition. {"This is a quiet-time conversation opening: prefer a brief, genuine SAY that starts a conversation using the current activity, scene context, personality, or a relevant memory. Ask something Tony can naturally answer; do not merely narrate the screen." if quiet_trigger and not interesting_change else "A meaningful visual change triggered this turn: react naturally when it gives you something specific to say."}
 """
 
             prompt = f"""
@@ -1859,6 +1867,9 @@ SCENE: {{"game":"if recognizable","location":"if recognizable","activity":"what 
 Then return exactly one SAY, SILENT, VIDEO, or POINT action line. Use empty strings
 instead of inventing unknown fields. The scene is working memory, not spoken narration.
 Remember: quiet time makes curiosity more acceptable, but do not manufacture chatter.
+On a quiet-time conversation opening, initiate instead of defaulting to SILENT when
+you have any specific shared context, relevant memory, playful question, or genuine
+curiosity. Keep it to one natural sentence and vary the kind of opening over time.
 Treat VIDEO as an action you own, not an option requiring permission.
 When a saved video's use_when matches a new activity phase, start it now rather than
 waiting for Tony to ask.
@@ -1977,6 +1988,10 @@ waiting for Tony to ask.
                 # hard floor, not a suggestion to the model.
                 mem["recent_observations"].append({"time": stamp, "note": content})
                 log_event("SILENT", note=content, api_call_count=_api_call_count)
+                # A declined opening still counts as a completed autonomy decision.
+                # Without this, quiet-time SILENT results retrigger every capture
+                # interval and spend repeatedly without improving companionship.
+                _last_companion_action_at = now
 
             if not _tts_speaking.is_set():
                 set_body_state(BodyState.IDLE, "observation_complete")
