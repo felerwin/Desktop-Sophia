@@ -73,6 +73,7 @@ export default function Home() {
             <div className="panelHeader"><div><p className="eyebrow">BEHAVIOR</p><h3>Autonomy</h3></div></div>
             <div className="deviceControl"><label htmlFor="voiceSelector"><span><strong>Sophia’s voice</strong><small>Local Chatterbox engine</small></span></label><select id="voiceSelector" defaultValue="chatterbox-turbo"><option value="chatterbox-turbo">Chatterbox Turbo</option></select></div>
             <div className="deviceControl"><label htmlFor="microphoneSelector"><span><strong>Input microphone</strong><small>Reconnects the listener live</small></span></label><select id="microphoneSelector" defaultValue="3"><option value="1">HD Pro Webcam C920</option><option value="3">H510-PRO Wireless</option></select></div>
+            <div className="deviceControl"><label htmlFor="audioOutputSelector"><span><strong>Audio output</strong><small>Reloads Chatterbox on the selected device</small></span></label><select id="audioOutputSelector" defaultValue="headset"><option value="headset">H510-PRO Wireless · Windows WASAPI</option></select></div>
             <label><span><strong>Speak aloud</strong><small>Local Chatterbox voice</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Screen awareness</strong><small>Notice meaningful changes</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Spontaneous remarks</strong><small>Respect the quiet-time rules</small></span><input type="checkbox" defaultChecked /></label>

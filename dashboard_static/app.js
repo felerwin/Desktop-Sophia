@@ -3,6 +3,7 @@ const apiBase = window.location.port === "3000" ? "http://127.0.0.1:8766" : "";
 let locallyCleared = 0;
 let voicesLoaded = false;
 let microphonesLoaded = false;
+let audioOutputsLoaded = false;
 let videoSignature = "";
 let youtubePlayer = null;
 let youtubePlayerReady = false;
@@ -260,6 +261,16 @@ function render(state) {
   if ($("microphoneSelector") !== document.activeElement && state.selected_microphone != null) {
     $("microphoneSelector").value = String(state.selected_microphone);
   }
+  if (!audioOutputsLoaded && state.audio_output_options.length) {
+    $("audioOutputSelector").innerHTML = state.audio_output_options.map((device) =>
+      `<option value="${escapeHtml(device.id)}">${escapeHtml(device.label)}</option>`
+    ).join("");
+    audioOutputsLoaded = true;
+  }
+  $("audioOutputSelector").disabled = !state.audio_output_options.length;
+  if ($("audioOutputSelector") !== document.activeElement && state.selected_audio_output != null) {
+    $("audioOutputSelector").value = String(state.selected_audio_output);
+  }
   renderYoutube(state.youtube);
   renderMemories(state.memory);
   renderGameEvents(state.game_events);
@@ -393,6 +404,22 @@ document.querySelectorAll("[data-test-event]").forEach((button) => {
     eventSignature = "";
     refresh();
   });
+});
+
+$("audioOutputSelector").addEventListener("change", async (event) => {
+  const selector = event.currentTarget;
+  selector.disabled = true;
+  try {
+    const response = await fetch(`${apiBase}/api/audio-output`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ output: selector.value }),
+    });
+    if (!response.ok) throw new Error("Audio output change failed");
+  } finally {
+    selector.disabled = false;
+    refresh();
+  }
 });
 
 document.querySelectorAll("[data-body-test]").forEach((button) => {

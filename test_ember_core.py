@@ -76,6 +76,26 @@ class EmberWorldStateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             dashboard.test_body("invented-animation")
 
+    def test_dashboard_audio_output_selection_persists_and_reloads_voice(self):
+        received = []
+        config = {}
+        with tempfile.TemporaryDirectory() as folder:
+            dashboard = DashboardHub(Path(folder), config, threading.Event())
+            dashboard.set_audio_output_controls([{
+                "id": "14",
+                "index": 14,
+                "name": "Headphones",
+                "hostapi": "Windows WASAPI",
+                "label": "Headphones · Windows WASAPI",
+            }], lambda name, hostapi: received.append((name, hostapi)))
+
+            result = dashboard.update_audio_output("14")
+
+        self.assertEqual(result["name"], "Headphones")
+        self.assertEqual(config["tts_output_device"], "Headphones")
+        self.assertEqual(config["tts_output_hostapi"], "Windows WASAPI")
+        self.assertEqual(received, [("Headphones", "Windows WASAPI")])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,10 +43,12 @@ class DashboardHub:
         self.thread = None
         self.voice_change_handler = None
         self.microphone_change_handler = None
+        self.audio_output_change_handler = None
         self.budget_state_provider = None
         self.budget_resume_handler = None
         self.body_test_handler = None
         self.microphone_options = []
+        self.audio_output_options = []
         self.state = {
             "phase": "starting",
             "phase_label": "Starting up",
@@ -166,6 +168,12 @@ class DashboardHub:
                 "selected_voice": "chatterbox-turbo",
                 "microphone_options": self.microphone_options,
                 "selected_microphone": self.config.get("mic_device"),
+                "audio_output_options": self.audio_output_options,
+                "selected_audio_output": next((
+                    item["id"] for item in self.audio_output_options
+                    if item["name"] == self.config.get("tts_output_device")
+                    and item["hostapi"] == self.config.get("tts_output_hostapi")
+                ), None),
                 "youtube": {
                     **self.youtube_state,
                     "command_seq": self.youtube_command_seq,
@@ -832,6 +840,31 @@ class DashboardHub:
             self.microphone_change_handler(device_index)
         return match
 
+    def set_audio_output_controls(self, options, handler):
+        with self.lock:
+            self.audio_output_options = list(options)
+        self.audio_output_change_handler = handler
+
+    def update_audio_output(self, output_id):
+        match = next(
+            (item for item in self.audio_output_options if item["id"] == str(output_id)),
+            None,
+        )
+        if match is None:
+            raise ValueError("Unknown audio output.")
+        with self.lock:
+            self.config["tts_output_device"] = match["name"]
+            self.config["tts_output_hostapi"] = match["hostapi"]
+            self.state["phase"] = "warming"
+            self.state["phase_label"] = "Switching speakers…"
+            config_path = self.root / "config.json"
+            tmp_path = config_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
+            os.replace(tmp_path, config_path)
+        if self.audio_output_change_handler is not None:
+            self.audio_output_change_handler(match["name"], match["hostapi"])
+        return match
+
     def update_voice(self, voice_id):
         match = next((item for item in VOICE_OPTIONS if item["voice"] == voice_id), None)
         if match is None:
@@ -938,6 +971,9 @@ class DashboardHub:
                     elif path == "/api/microphone":
                         microphone = hub.update_microphone(payload.get("device"))
                         self._json({"ok": True, "microphone": microphone})
+                    elif path == "/api/audio-output":
+                        output = hub.update_audio_output(payload.get("output"))
+                        self._json({"ok": True, "audio_output": output})
                     elif path == "/api/youtube/add":
                         video = hub.add_youtube_video(
                             payload.get("url"), payload.get("title"), payload.get("use_when"),

@@ -306,6 +306,18 @@ class TTSWorker:
     def change_voice(self, voice, language, name):
         log_event("VOICE_CHANGE_IGNORED", engine=self.engine)
 
+    def change_output_device(self, name, hostapi):
+        CONFIG["tts_output_device"] = str(name)
+        CONFIG["tts_output_hostapi"] = str(hostapi)
+        self._ready.clear()
+        self._startup_error = None
+        if self._thread.is_alive():
+            self._queue.put({"command": "change_output"})
+        else:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        log_event("TTS_OUTPUT_CHANGE_REQUESTED", output_device=name, output_hostapi=hostapi)
+
     def _read_worker_event(self, wanted):
         while self._proc and self._proc.poll() is None:
             line = self._proc.stdout.readline()
@@ -386,6 +398,25 @@ class TTSWorker:
 
             if item.get("command") == "change_voice":
                 continue
+            if item.get("command") == "change_output":
+                self._shutdown_worker()
+                self._proc = None
+                try:
+                    self._start_worker()
+                    self._startup_error = None
+                    log_event(
+                        "TTS_OUTPUT_CHANGED",
+                        output_device=CONFIG.get("tts_output_device"),
+                        output_hostapi=CONFIG.get("tts_output_hostapi"),
+                    )
+                    if _dashboard is not None:
+                        _dashboard.set_phase("listening", "I’m listening.")
+                except Exception as exc:
+                    self._startup_error = str(exc)
+                    log_event("TTS_ERROR", detail=str(exc))
+                finally:
+                    self._ready.set()
+                continue
 
             text = item["text"]
             timing = item.get("timing", {})
@@ -458,6 +489,7 @@ class TTSWorker:
                     proc.kill()
                 except Exception:
                     pass
+        self._proc = None
 
     def say(self, text, timing=None, wait=False, timeout=None):
         if CONFIG.get("speak_out_loud", True):
@@ -542,6 +574,30 @@ def choose_microphone():
         name = str(chosen)
     print(f"Sophia will listen through: {name}")
     return chosen
+
+
+def available_audio_outputs():
+    """Return selectable output devices with stable labels for the dashboard."""
+    try:
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+        return [
+            {
+                "id": str(index),
+                "index": index,
+                "name": str(info.get("name", f"Output {index}")),
+                "hostapi": str(hostapis[int(info["hostapi"])]["name"]),
+                "label": (
+                    f"{info.get('name', f'Output {index}')} · "
+                    f"{hostapis[int(info['hostapi'])]['name']}"
+                ),
+            }
+            for index, info in enumerate(devices)
+            if int(info.get("max_output_channels", 0)) > 0
+        ]
+    except Exception as exc:
+        log_event("AUDIO_OUTPUT_QUERY_ERROR", detail=str(exc))
+        return []
 
 class VoiceListener:
     def __init__(self, client):
@@ -1562,6 +1618,10 @@ def main():
     vision_rate_cap = RateCap(int(CONFIG.get("max_vision_calls_per_minute", 6)))
     tts_worker = TTSWorker()
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
+    _dashboard.set_audio_output_controls(
+        available_audio_outputs(),
+        tts_worker.change_output_device,
+    )
     print("Warming up Sophia's voice...")
     if tts_worker.wait_ready(float(CONFIG.get("tts_startup_block_seconds", 3))):
         greeting = str(CONFIG.get("startup_greeting", "I'm awake and ready, Tony.")).strip()
