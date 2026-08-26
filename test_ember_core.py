@@ -14,6 +14,9 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(body_state_for_speech("That is hilarious."), BodyState.LAUGHING)
         self.assertEqual(body_state_for_speech("I told you that would work."), BodyState.SMUG)
         self.assertEqual(body_state_for_speech("Careful, your health is low."), BodyState.WORRIED)
+        self.assertEqual(body_state_for_speech("I am proud of you."), BodyState.PROUD)
+        self.assertEqual(body_state_for_speech("Are you sure about that?"), BodyState.SKEPTICAL)
+        self.assertEqual(body_state_for_speech("That was close, but we're safe now."), BodyState.RELIEVED)
         self.assertEqual(body_state_for_speech("Here is the answer."), BodyState.SPEAKING)
 
     def test_overlay_settles_at_destination_without_unpacking_focus_metadata(self):
@@ -50,6 +53,18 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(len(images.animation("idle")), 6)
         self.assertEqual(len(images.animation("moving-left")), 8)
         self.assertEqual(len(images.animation("moving-right")), 8)
+        for reaction in (
+            "proud", "curious", "determined", "sleepy", "annoyed",
+            "confused", "skeptical", "affectionate", "relieved", "mischievous",
+        ):
+            image = images.reaction(reaction)
+            self.assertEqual(image.size, (192, 208))
+            alpha = image.getchannel("A")
+            edges = (
+                alpha.crop((0, 0, 192, 1)), alpha.crop((0, 207, 192, 208)),
+                alpha.crop((0, 0, 1, 208)), alpha.crop((191, 0, 192, 208)),
+            )
+            self.assertTrue(all(edge.getbbox() is None for edge in edges), reaction)
 
     def test_screen_deltas_use_clockwise_up_zero_directions(self):
         self.assertEqual(direction_degrees(0, -1), 0)

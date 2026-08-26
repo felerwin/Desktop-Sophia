@@ -80,7 +80,7 @@ export default function Home() {
             <label><span><strong>Long-term memory</strong><small>Recall relevant facts across sessions</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Game-event awareness</strong><small>React to reliable local game signals</small></span><input type="checkbox" defaultChecked /></label>
             <label><span><strong>Video autonomy</strong><small>Sophia may use videos from her saved shelf</small></span><input type="checkbox" defaultChecked /></label>
-            <div className="eventTestRow bodyTestRow"><span>Body Lab</span><button type="button">Idle</button><button type="button">Wave</button><button type="button">Jump</button><button type="button">Worry</button><button type="button">Startle</button><button type="button">Celebrate</button><button type="button">Meltdown</button></div>
+            <div className="eventTestRow bodyTestRow"><span>Body Lab</span><button type="button">Idle</button><button type="button">Wave</button><button type="button">Jump</button><button type="button">Worry</button><button type="button">Startle</button><button type="button">Proud</button><button type="button">Curious</button><button type="button">Determined</button><button type="button">Sleepy</button><button type="button">Annoyed</button><button type="button">Confused</button><button type="button">Skeptical</button><button type="button">Affectionate</button><button type="button">Relieved</button><button type="button">Mischievous</button><button type="button">Celebrate</button><button type="button">Meltdown</button></div>
           </article>
 
           <details className="panel diagnostics">

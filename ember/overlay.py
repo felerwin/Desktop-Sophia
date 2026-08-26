@@ -20,6 +20,8 @@ REACTION_NAMES = {
     "idle", "listening", "thinking", "speaking", "amused", "excited",
     "concerned", "startled", "moving-left", "moving-right",
     "laughing", "facepalming", "embarrassed", "shy", "worried", "crying", "smug",
+    "proud", "curious", "determined", "sleepy", "annoyed", "confused",
+    "skeptical", "affectionate", "relieved", "mischievous",
 }
 ANIMATION_INTERVAL_MS = {"idle": 360, "moving-left": 145, "moving-right": 145}
 TICK_INTERVAL_MS = 50
@@ -89,6 +91,16 @@ class EmberOverlay:
         "worried": "worried",
         "crying": "crying",
         "smug": "smug",
+        "proud": "proud",
+        "curious": "curious",
+        "determined": "determined",
+        "sleepy": "sleepy",
+        "annoyed": "annoyed",
+        "confused": "confused",
+        "skeptical": "skeptical",
+        "affectionate": "affectionate",
+        "relieved": "relieved",
+        "mischievous": "mischievous",
         "pointing": "idle",
         "moving": "moving-right",
     }

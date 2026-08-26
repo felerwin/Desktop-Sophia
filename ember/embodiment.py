@@ -23,6 +23,16 @@ class BodyState(str, Enum):
     WORRIED = "worried"
     CRYING = "crying"
     SMUG = "smug"
+    PROUD = "proud"
+    CURIOUS = "curious"
+    DETERMINED = "determined"
+    SLEEPY = "sleepy"
+    ANNOYED = "annoyed"
+    CONFUSED = "confused"
+    SKEPTICAL = "skeptical"
+    AFFECTIONATE = "affectionate"
+    RELIEVED = "relieved"
+    MISCHIEVOUS = "mischievous"
     POINTING = "pointing"
     MOVING = "moving"
 
@@ -31,10 +41,20 @@ def body_state_for_speech(text: str) -> BodyState:
     """Choose a readable conversational pose while Ember delivers a line."""
     normalized = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
     rules = (
+        (BodyState.PROUD, r"\b(?:proud|nailed it|well done|look at you)\b"),
+        (BodyState.CURIOUS, r"\b(?:curious|wonder|what if|how does|tell me more)\b"),
+        (BodyState.DETERMINED, r"\b(?:we've got this|lets do this|let's do this|determined|not giving up)\b"),
+        (BodyState.SLEEPY, r"\b(?:sleepy|tired|yawn|bedtime|exhausted)\b"),
+        (BodyState.ANNOYED, r"\b(?:annoying|annoyed|ugh|irritating|fed up)\b"),
+        (BodyState.CONFUSED, r"\b(?:confused|doesn't make sense|do not understand|wait what)\b"),
+        (BodyState.SKEPTICAL, r"\b(?:skeptical|doubt|not convinced|are you sure|suspicious)\b"),
+        (BodyState.AFFECTIONATE, r"\b(?:love you|love that|dear|darling|my favorite)\b"),
+        (BodyState.RELIEVED, r"\b(?:relieved|thank goodness|that was close|safe now|finally)\b"),
+        (BodyState.MISCHIEVOUS, r"\b(?:mischief|naughty|sneaky|chaos|bad idea)\b"),
         (BodyState.LAUGHING, r"\b(?:haha|hahaha|lmao|rofl|hilarious|cracking me up)\b"),
         (BodyState.FACEPALMING, r"\b(?:facepalm|oh god|oh no|seriously|what a mess)\b"),
         (BodyState.EMBARRASSED, r"\b(?:embarrass|awkward|blush|mortif)\w*\b"),
-        (BodyState.SHY, r"\b(?:love you|sweet of you|flatter|adorable)\w*\b"),
+        (BodyState.SHY, r"\b(?:sweet of you|flatter|adorable)\w*\b"),
         (BodyState.WORRIED, r"\b(?:careful|danger|worried|worry|hurt|health|dying)\b"),
         (BodyState.CRYING, r"\b(?:crying|heartbroken|devastat|so sad)\w*\b"),
         (BodyState.STARTLED, r"\b(?:whoa|woah|holy|what the|startled|scared me)\b"),
