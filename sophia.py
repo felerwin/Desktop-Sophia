@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, VisualObservation, WorldState, body_state_for_speech
+from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, VisualObservation, WorldState, body_state_for_speech
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -418,12 +418,18 @@ class TTSWorker:
                     self._ready.set()
                 continue
 
-            text = item["text"]
-            timing = item.get("timing", {})
-            speech_state = item.get("body_state", BodyState.SPEAKING)
+            performance = item if isinstance(item, SpeechPerformance) else SpeechPerformance(
+                text=item["text"],
+                timing=item.get("timing", {}),
+                opening_state=item.get("body_state"),
+                done=item.get("done"),
+            )
+            text = performance.text
+            timing = performance.timing
+            speech_state = performance.opening_state or BodyState.SPEAKING
             _tts_speaking.set()
-            set_body_state(speech_state, f"{self.engine}_playback")
-            if speech_state != BodyState.SPEAKING:
+            performance.begin(set_body_state)
+            if performance.expressive:
                 log_event("BODY_SPEECH_REACTION", state=speech_state.value, text=text[:120])
             if _dashboard is not None:
                 _dashboard.set_phase("speaking", "Speaking…")
@@ -439,6 +445,7 @@ class TTSWorker:
                     continue
 
                 audio_start_at = time.perf_counter()
+                performance.audio_started(set_body_state)
                 log_event(
                     "TTS_AUDIO_START",
                     phrase_index=timing.get("phrase_index", 1),
@@ -464,13 +471,9 @@ class TTSWorker:
                 log_event("TTS_ERROR", detail=str(exc))
             finally:
                 _tts_speaking.clear()
-                done = item.get("done")
-                if done is not None:
-                    done.set()
+                performance.finish(set_body_state, return_to_idle=self._queue.empty())
                 if self._queue.empty() and _dashboard is not None:
                     _dashboard.set_phase("listening", "I’m listening.")
-                if self._queue.empty():
-                    set_body_state(BodyState.IDLE, "speech_complete")
 
         self._shutdown_worker()
 
@@ -499,12 +502,12 @@ class TTSWorker:
             timing = dict(timing or {})
             timing["queued_at"] = time.perf_counter()
             done = threading.Event() if wait else None
-            self._queue.put({
-                "text": text,
-                "timing": timing,
-                "done": done,
-                "body_state": body_state or body_state_for_speech(text),
-            })
+            self._queue.put(SpeechPerformance(
+                text=text,
+                timing=timing,
+                done=done,
+                opening_state=body_state or body_state_for_speech(text),
+            ))
             if done is not None:
                 return done.wait(timeout)
         return False
