@@ -432,12 +432,15 @@ def handle_game_event(event):
             )
     event_type = event.get("event_type")
     body_sequence = body_sequence_for_game_event(event_type)
-    if body_sequence and _embodiment is not None:
+    body_allowed = _director is None or _director.accept_body_event(event)
+    if body_sequence and body_allowed and _embodiment is not None:
         _embodiment.perform(body_sequence, f"game_event:{event_type}")
         log_event(
             "BODY_REACTION", event_type=event_type,
             sequence=[state.value for state in body_sequence],
         )
+    elif body_sequence and not body_allowed:
+        log_event("BODY_REACTION_SUPPRESSED", event_type=event_type, reason="repeat")
     log_event(
         "GAME_EVENT",
         event_type=event_type,
@@ -1146,6 +1149,25 @@ def main():
             )
             performance = plan_performance(direction)
             triggered = bool(direction.act and (bool(game_event) or gap_ok))
+
+            if direction.body_only and _embodiment is not None:
+                _embodiment.perform(
+                    [performance.body_state], f"director:{direction.reason}"
+                )
+                _last_companion_action_at = now
+                _director.record_outcome(intent=direction.intent, spoke=False)
+                log_event(
+                    "DIRECTOR_BODY_ONLY",
+                    intent=direction.intent,
+                    state=performance.body_state.value,
+                    reason=direction.reason,
+                    estimated_cost_usd=0.0,
+                )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
+                continue
 
             if not triggered:
                 log_event(

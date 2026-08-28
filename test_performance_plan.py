@@ -23,6 +23,14 @@ class PerformancePlanTests(unittest.TestCase):
         plan = plan_performance(DirectorDecision(True, "observe", "warm", "test", "bogus"))
         self.assertEqual(plan.body_state, BodyState.IDLE)
 
+    def test_body_only_direction_keeps_selected_pose(self):
+        decision = DirectorDecision(
+            False, "track_change", "warm", "cooldown", "curious",
+            body_only=True,
+        )
+        self.assertTrue(decision.body_only)
+        self.assertEqual(plan_performance(decision).body_state, BodyState.CURIOUS)
+
 
 if __name__ == "__main__":
     unittest.main()

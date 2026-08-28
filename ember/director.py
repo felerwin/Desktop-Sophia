@@ -16,6 +16,7 @@ class DirectorDecision:
     allow_media: bool = False
     priority: int = 0
     topic: str = ""
+    body_only: bool = False
 
 
 @dataclass
@@ -51,6 +52,8 @@ class EmberDirector:
         self.last_visual_reaction_at = 0.0
         self.last_event_key = ""
         self.last_event_at = 0.0
+        self.last_body_event_key = ""
+        self.last_body_event_at = 0.0
         self.event_history = deque(maxlen=12)
         self.intent_history = deque(maxlen=8)
         self.curiosity_threads: list[CuriosityThread] = []
@@ -109,6 +112,26 @@ class EmberDirector:
                 self.active_curiosity.status = "retired"
                 self.active_curiosity = None
 
+    def accept_body_event(self, event):
+        """Gate renderer reactions independently from conversational decisions."""
+        event_type = str((event or {}).get("event_type") or "")
+        if not event_type:
+            return False
+        priority = int(
+            (event or {}).get("salience")
+            or (9 if (event or {}).get("priority") == "critical" else 0)
+        )
+        now = self.clock()
+        key = self._event_key(event_type, event or {})
+        repeat_window = float(self.config.get("director_body_repeat_seconds", 8))
+        if (
+            priority < 8 and key == self.last_body_event_key
+            and now - self.last_body_event_at < repeat_window
+        ):
+            return False
+        self.last_body_event_key, self.last_body_event_at = key, now
+        return True
+
     def decide(self, *, silence, change, game_event=None, quiet_trigger=False):
         self._decay()
         now = self.clock()
@@ -148,7 +171,8 @@ class EmberDirector:
             if self.last_visual_reaction_at and now - self.last_visual_reaction_at < visual_gap:
                 return DirectorDecision(
                     False, "track_change", self.mood, "visual_reaction_cooldown",
-                    "attentive", priority=2, topic="continuing visual change",
+                    "curious", priority=2, topic="continuing visual change",
+                    body_only=True,
                 )
             self.last_visual_reaction_at = now
             return DirectorDecision(

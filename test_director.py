@@ -96,6 +96,7 @@ class EmberDirectorTests(unittest.TestCase):
         now[0] += 5
         held = director.decide(silence=65, change=9)
         self.assertFalse(held.act)
+        self.assertTrue(held.body_only)
         self.assertEqual(held.reason, "visual_reaction_cooldown")
         now[0] += 16
         self.assertTrue(director.decide(silence=81, change=7).act)
@@ -122,6 +123,18 @@ class EmberDirectorTests(unittest.TestCase):
         director.add_curiosity("fresh mystery")
         decision = director.decide(silence=200, change=0, quiet_trigger=True)
         self.assertEqual(decision.topic, "fresh mystery")
+
+    def test_body_event_gate_prevents_animation_thrashing(self):
+        now = [1000.0]
+        director = EmberDirector(
+            {"director_body_repeat_seconds": 8}, clock=lambda: now[0]
+        )
+        event = {"event_type": "valuable_loot", "title": "same sword", "salience": 5}
+        self.assertTrue(director.accept_body_event(event))
+        now[0] += 1
+        self.assertFalse(director.accept_body_event(event))
+        now[0] += 8
+        self.assertTrue(director.accept_body_event(event))
 
 
 if __name__ == "__main__":
