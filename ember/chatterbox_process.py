@@ -26,6 +26,7 @@ def chatterbox_launch(root, config, python, helper):
         str(config.get("tts_output_device", "")),
         str(config.get("tts_output_hostapi", "")),
         str(local_snapshot or ""),
+        "true" if config.get("tts_debug_capture", False) else "false",
     ]
     env = os.environ.copy()
     if config.get("portable_mode", False) or local_model.is_dir():

@@ -38,7 +38,8 @@ class ChatterboxProcessTests(unittest.TestCase):
             (snapshot / "t3_turbo_v1.safetensors").touch()
             (snapshot / "s3gen_meanflow.safetensors").touch()
             args, env = chatterbox_launch(root, {"portable_mode": True}, "python", "worker.py")
-        self.assertEqual(args[-1], str(snapshot))
+        self.assertEqual(args[-2], str(snapshot))
+        self.assertEqual(args[-1], "false")
         self.assertIn("HF_HOME", env)
         self.assertIn("XDG_CACHE_HOME", env)
 

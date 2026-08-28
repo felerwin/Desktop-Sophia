@@ -1,8 +1,10 @@
 """Persistent local Chatterbox Turbo synthesis worker for Ember."""
 
 import json
+import os
 import queue
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -12,6 +14,10 @@ import sounddevice as sd
 import torch
 from chatterbox.tts_turbo import ChatterboxTurboTTS
 from ember.audio_output import prepare_playback_audio
+from scipy.io import wavfile
+
+if os.name == "nt":
+    import winsound
 
 
 def emit(kind, **fields):
@@ -48,6 +54,7 @@ def main():
     output_name = str(sys.argv[2]).strip() if len(sys.argv) > 2 else ""
     output_hostapi = str(sys.argv[3]).strip() if len(sys.argv) > 3 else ""
     model_path = Path(sys.argv[4]).resolve() if len(sys.argv) > 4 and sys.argv[4] else None
+    debug_capture = len(sys.argv) > 5 and str(sys.argv[5]).casefold() in {"1", "true", "yes"}
     if prompt_path and not prompt_path.is_file():
         raise SystemExit(f"Chatterbox voice reference does not exist: {prompt_path}")
     if model_path and not model_path.is_dir():
@@ -79,9 +86,15 @@ def main():
         "READY", voice="chatterbox-turbo", device=device,
         output_device=output_info["name"], output_hostapi=output_api,
         output_rate=output_rate,
+        playback_backend="windows_wav" if os.name == "nt" else "portaudio",
     )
 
     commands = queue.Queue()
+    cache_root = Path(__file__).resolve().parent / ".cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    debug_root = cache_root / "tts_debug"
+    if debug_capture:
+        debug_root.mkdir(parents=True, exist_ok=True)
 
     def read_commands():
         for line in sys.stdin:
@@ -116,7 +129,17 @@ def main():
                 emit("ERROR", detail="Chatterbox generated no audio.")
                 continue
 
-            audio = prepare_playback_audio(audio, model.sr, output_rate)
+            raw_audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            audio = prepare_playback_audio(raw_audio, model.sr, output_rate)
+            if debug_capture:
+                wavfile.write(debug_root / "latest_native_24k.wav", int(model.sr), raw_audio)
+                wavfile.write(debug_root / "latest_output_48k.wav", output_rate, audio)
+            emit(
+                "AUDIO_PREPARED", native_rate=int(model.sr), output_rate=output_rate,
+                native_samples=len(raw_audio), output_samples=len(audio),
+                native_peak=round(float(np.max(np.abs(raw_audio))), 4),
+                output_peak=round(float(np.max(np.abs(audio))), 4),
+            )
             cancelled = False
             while not commands.empty():
                 pending = commands.get_nowait()
@@ -134,23 +157,61 @@ def main():
             synthesis_seconds = time.perf_counter() - started
             playback_started = time.perf_counter()
             emit("AUDIO_START", synthesis_seconds=round(synthesis_seconds, 3))
-            chunk_size = max(256, output_rate // 20)
-            with sd.OutputStream(
-                samplerate=output_rate, channels=1, dtype="float32", device=output_index
-            ) as stream:
-                for offset in range(0, len(audio), chunk_size):
-                    if not commands.empty():
-                        pending = commands.get_nowait()
-                        if pending is None:
-                            return
-                        pending_msg = json.loads(pending)
-                        if pending_msg.get("cmd") == "stop":
-                            emit("STOPPED")
-                            return
-                        if pending_msg.get("cmd") == "cancel":
-                            cancelled = True
-                            break
-                    stream.write(audio[offset:offset + chunk_size].reshape(-1, 1))
+            if os.name == "nt":
+                handle = tempfile.NamedTemporaryFile(
+                    prefix="ember-tts-", suffix=".wav", dir=cache_root, delete=False
+                )
+                playback_path = Path(handle.name)
+                handle.close()
+                wavfile.write(playback_path, output_rate, audio)
+                try:
+                    winsound.PlaySound(
+                        str(playback_path),
+                        winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                    )
+                    playback_deadline = playback_started + len(audio) / output_rate
+                    stop_requested = False
+                    while time.perf_counter() < playback_deadline:
+                        if not commands.empty():
+                            pending = commands.get_nowait()
+                            if pending is None:
+                                stop_requested = True
+                                break
+                            pending_msg = json.loads(pending)
+                            if pending_msg.get("cmd") == "stop":
+                                stop_requested = True
+                                break
+                            if pending_msg.get("cmd") == "cancel":
+                                cancelled = True
+                                break
+                        time.sleep(0.04)
+                finally:
+                    winsound.PlaySound(None, winsound.SND_PURGE)
+                    try:
+                        playback_path.unlink()
+                    except OSError:
+                        pass
+                if stop_requested:
+                    emit("STOPPED")
+                    return
+            else:
+                chunk_size = max(256, output_rate // 20)
+                with sd.OutputStream(
+                    samplerate=output_rate, channels=1, dtype="float32", device=output_index
+                ) as stream:
+                    for offset in range(0, len(audio), chunk_size):
+                        if not commands.empty():
+                            pending = commands.get_nowait()
+                            if pending is None:
+                                return
+                            pending_msg = json.loads(pending)
+                            if pending_msg.get("cmd") == "stop":
+                                emit("STOPPED")
+                                return
+                            if pending_msg.get("cmd") == "cancel":
+                                cancelled = True
+                                break
+                        stream.write(audio[offset:offset + chunk_size].reshape(-1, 1))
             if cancelled:
                 emit("CANCELLED", phase="playback")
                 continue

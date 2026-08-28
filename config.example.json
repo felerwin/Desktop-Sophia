@@ -50,6 +50,7 @@
   "tts_output_device": "",
   "tts_output_hostapi": "",
   "tts_startup_block_seconds": 3,
+  "tts_debug_capture": false,
   "mic_device": null,
   "portable_mode": true,
   "ember_overlay_enabled": true,
