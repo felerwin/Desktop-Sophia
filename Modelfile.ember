@@ -1,0 +1,7 @@
+FROM qwen3-vl:4b-instruct
+
+# Ember's identity, memory, world state, and action grammar exceed Ollama's
+# conservative 4096-token default. 8192 fits normal turns without the VRAM
+# pressure of the earlier 8B model.
+PARAMETER num_ctx 8192
+PARAMETER temperature 0.7

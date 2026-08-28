@@ -1664,7 +1664,7 @@ def main():
             base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
             api_key="ollama",
         )
-        legacy_model = os.getenv("EMBER_LOCAL_MODEL", "qwen3-vl:4b-instruct")
+        legacy_model = os.getenv("EMBER_LOCAL_MODEL", "ember-local")
         companion_model = legacy_model
         router_model = legacy_model
         log_event("LOCAL_AI_CONFIGURED", provider="ollama", model=legacy_model)
