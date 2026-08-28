@@ -1676,8 +1676,14 @@ def main():
         legacy_model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
         companion_model = os.getenv("OPENAI_COMPANION_MODEL", "gpt-5.6-terra")
         router_model = os.getenv("OPENAI_ROUTER_MODEL", legacy_model)
-    companion_effort = str(CONFIG.get("companion_reasoning_effort", "low"))
-    router_effort = str(CONFIG.get("router_reasoning_effort", "none"))
+    companion_effort = (
+        "none" if provider == "ollama"
+        else str(CONFIG.get("companion_reasoning_effort", "low"))
+    )
+    router_effort = (
+        "none" if provider == "ollama"
+        else str(CONFIG.get("router_reasoning_effort", "none"))
+    )
     direct_route = hybrid_route(
         direct=True,
         companion_model=companion_model,
