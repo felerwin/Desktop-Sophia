@@ -15,6 +15,11 @@ Ember also has an optional transparent, always-on-top, click-through body. Idle 
 walking use lightweight frame animation; listening, thinking, speaking, and emotional
 states switch between independent transparent PNG reaction images without extra model calls.
 
+The deterministic Ember Director sits between perception and the language model. It
+tracks engagement and emotional continuity, selects a conversational intent, varies
+quiet-time openings, and coordinates game-event priorities with her body and media
+policy. The model writes the line; the Director decides why she is speaking.
+
 The dashboard and companion data stay on the computer. OpenAI receives the
 screenshots and transcripts needed for enabled model features.
 
@@ -51,7 +56,8 @@ included. Frontend developers can rebuild the source under `dashboard/`.
 
 ## Everyday use
 
-Starting Ember opens a private local dashboard at:
+Ember serves a private local dashboard at the following address, but does not open a
+browser or interrupt a fullscreen game automatically:
 
 `http://127.0.0.1:8766/`
 
@@ -65,6 +71,10 @@ screen understanding, and reliable game events with low reasoning effort. Luna
 handles routine video-only decisions at no reasoning effort. Set
 `OPENAI_COMPANION_MODEL` and `OPENAI_ROUTER_MODEL` in `.env` to change either
 role independently.
+
+Direct conversation degrades to audio-only when exclusive fullscreen prevents a
+screenshot. Reliable WoW telemetry events normally skip screenshot upload entirely,
+reducing autonomous vision cost without weakening exact game-state reactions.
 
 ### Cost governor
 

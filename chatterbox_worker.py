@@ -1,7 +1,9 @@
 """Persistent local Chatterbox Turbo synthesis worker for Ember."""
 
 import json
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -33,6 +35,11 @@ def resolve_output_device(name_hint, hostapi_hint):
         raise RuntimeError(
             f"No output device matched name={name_hint!r}, hostapi={hostapi_hint!r}."
         )
+    if not name_hint and not hostapi_hint:
+        default_output = sd.default.device[1]
+        for candidate in candidates:
+            if candidate[0] == default_output:
+                return candidate
     return candidates[0]
 
 
@@ -74,15 +81,28 @@ def main():
         output_rate=output_rate,
     )
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    commands = queue.Queue()
+
+    def read_commands():
+        for line in sys.stdin:
+            line = line.strip()
+            if line:
+                commands.put(line)
+        commands.put(None)
+
+    threading.Thread(target=read_commands, daemon=True).start()
+    while True:
+        line = commands.get()
+        if line is None:
+            break
         try:
             msg = json.loads(line)
             if msg.get("cmd") == "stop":
                 emit("STOPPED")
                 break
+            if msg.get("cmd") == "cancel":
+                emit("CANCELLED", phase="idle")
+                continue
 
             text = str(msg.get("text", "")).strip()
             if not text:
@@ -99,11 +119,43 @@ def main():
             audio = np.asarray(audio, dtype=np.float32)
             if output_rate != model.sr:
                 audio = resample_poly(audio, output_rate, model.sr).astype(np.float32)
+            cancelled = False
+            while not commands.empty():
+                pending = commands.get_nowait()
+                if pending is None:
+                    return
+                pending_msg = json.loads(pending)
+                if pending_msg.get("cmd") == "stop":
+                    emit("STOPPED")
+                    return
+                if pending_msg.get("cmd") == "cancel":
+                    cancelled = True
+            if cancelled:
+                emit("CANCELLED", phase="synthesis")
+                continue
             synthesis_seconds = time.perf_counter() - started
             playback_started = time.perf_counter()
-            sd.play(audio, output_rate, device=output_index)
             emit("AUDIO_START", synthesis_seconds=round(synthesis_seconds, 3))
-            sd.wait()
+            chunk_size = max(256, output_rate // 20)
+            with sd.OutputStream(
+                samplerate=output_rate, channels=1, dtype="float32", device=output_index
+            ) as stream:
+                for offset in range(0, len(audio), chunk_size):
+                    if not commands.empty():
+                        pending = commands.get_nowait()
+                        if pending is None:
+                            return
+                        pending_msg = json.loads(pending)
+                        if pending_msg.get("cmd") == "stop":
+                            emit("STOPPED")
+                            return
+                        if pending_msg.get("cmd") == "cancel":
+                            cancelled = True
+                            break
+                    stream.write(audio[offset:offset + chunk_size].reshape(-1, 1))
+            if cancelled:
+                emit("CANCELLED", phase="playback")
+                continue
             emit(
                 "SPOKEN",
                 chars=len(text),

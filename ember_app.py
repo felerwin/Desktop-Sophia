@@ -1,22 +1,24 @@
 import os, json, time, base64, io, re, threading, queue, wave, tempfile, subprocess, urllib.request
+import shutil
 from pathlib import Path
 from datetime import datetime
 
 from dotenv import load_dotenv
 from PIL import Image, ImageChops, ImageStat
 import mss
-import pyttsx3
 import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmberBrain, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, SpriteBodyAdapter, VisualObservation, WorldState, body_state_for_speech
+from ember import BodyState, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, SpriteBodyAdapter, VisualObservation, WorldState, body_state_for_speech
 from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
+from ember.tts_protocol import should_log_worker_stderr, worker_command
 from game_events import GameEventEngine
 from memory_store import MemoryStore
 from model_routing import hybrid_route
 from speech_filter import transcript_rejection_reason
+from speech_naturalizer import normalize_spoken_text
 from spotify_control import SpotifyClient, SpotifyError
 from usage_costs import budget_decision, response_cost, transcription_cost
 from visual_context import parse_scene_envelope, scene_memory_note
@@ -25,8 +27,10 @@ ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
 CONFIG = json.loads((ROOT / "config.json").read_text())
+COMPANION_USER_NAME = str(CONFIG.get("companion_user_name", "Tony") or "Tony").strip()[:80]
 MEMORY_PATH = ROOT / "memory.json"
 SESSION_LOG_PATH = ROOT / "session_log.jsonl"
+CONFIG_PATH = ROOT / "config.json"
 
 
 def configured_python(value, fallback):
@@ -129,6 +133,7 @@ Decision order: honor a direct request first; use a fitting VIDEO for a larger a
 transition; otherwise POINT, SAY, or SILENT. No
 preamble, extra lines, markdown, or combined actions.
 """
+SYSTEM = SYSTEM.replace("Tony", COMPANION_USER_NAME)
 
 # Matches the allowed response actions (case-insensitive), allowing the message
 # body to contain its own colons/newlines. Anything that doesn't match this
@@ -173,6 +178,7 @@ _wow_adapter = None
 _ember_overlay = None
 _embodiment = None
 _brain = None
+_director = None
 _tts_worker = None
 _session_id = None
 _shutdown_requested = threading.Event()
@@ -228,15 +234,48 @@ def log_event(event_name, **fields):
 
 def load_memory():
     try:
-        return json.loads(MEMORY_PATH.read_text())
-    except Exception:
+        return json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {"recent_observations": [], "recent_utterances": []}
+    except Exception as exc:
+        backup = MEMORY_PATH.with_suffix(".json.bak")
+        log_event("MEMORY_READ_ERROR", detail=str(exc), preserved=str(MEMORY_PATH))
+        try:
+            recovered = json.loads(backup.read_text(encoding="utf-8"))
+            log_event("MEMORY_RECOVERED", source=str(backup))
+            return recovered
+        except Exception:
+            return {"recent_observations": [], "recent_utterances": []}
 
 
 def save_memory(mem):
     tmp_path = MEMORY_PATH.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(mem, indent=2))
+    backup = MEMORY_PATH.with_suffix(".json.bak")
+    if MEMORY_PATH.is_file():
+        try:
+            json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+            shutil.copy2(MEMORY_PATH, backup)
+        except Exception:
+            pass
+    tmp_path.write_text(json.dumps(mem, indent=2), encoding="utf-8")
     os.replace(tmp_path, MEMORY_PATH)  # atomic on both Windows and POSIX
+
+
+def save_config():
+    """Persist shared dashboard/device settings atomically."""
+    tmp_path = CONFIG_PATH.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(CONFIG, indent=2), encoding="utf-8")
+    os.replace(tmp_path, CONFIG_PATH)
+
+
+def memory_database_path():
+    """Use the Ember name while preserving existing relationship history."""
+    current = ROOT / "ember_memory.db"
+    legacy = ROOT / "sophia_memory.db"
+    if not current.exists() and legacy.is_file():
+        shutil.copy2(legacy, current)
+        log_event("MEMORY_DATABASE_MIGRATED", source=legacy.name, destination=current.name)
+    return current
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +298,7 @@ def capture_screen():
 
 def difference_score(a, b):
     if a is None or b is None:
-        return 100.0
+        return 0.0
     if a.size != b.size:
         b = b.resize(a.size)
     a2 = a.resize((320, 180))
@@ -271,7 +310,7 @@ def difference_score(a, b):
 
 def image_data_url(img):
     copy = img.copy()
-    copy.thumbnail((1280, 720))
+    copy.thumbnail((960, 540))
     buf = io.BytesIO()
     copy.save(buf, format="JPEG", quality=70)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
@@ -281,12 +320,6 @@ def image_data_url(img):
 # TTS: one persistent engine + a queue, instead of spinning up a new engine
 # per utterance. Also the only place that can produce TTS_ERROR.
 # ---------------------------------------------------------------------------
-
-try:
-    import pythoncom  # Windows-only; used to give the TTS worker thread its own COM apartment
-except ImportError:
-    pythoncom = None
-
 
 class TTSWorker:
     _STOP = object()
@@ -301,6 +334,7 @@ class TTSWorker:
         self.name = "Chatterbox Turbo"
         self.voice = "chatterbox-turbo"
         self._proc = None
+        self._stdin_lock = threading.Lock()
         self._ready = threading.Event()
         self._startup_error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -351,8 +385,8 @@ class TTSWorker:
         args = [
             self.python, "-u", str(self.helper),
             str(CONFIG.get("chatterbox_voice_reference", "")),
-            str(CONFIG.get("tts_output_device", "Speakers (2- Realtek(R) Audio)")),
-            str(CONFIG.get("tts_output_hostapi", "Windows WASAPI")),
+            str(CONFIG.get("tts_output_device", "")),
+            str(CONFIG.get("tts_output_hostapi", "")),
             str(local_snapshot or ""),
         ]
         worker_env = os.environ.copy()
@@ -368,13 +402,11 @@ class TTSWorker:
             env=worker_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            # Hugging Face and model loaders can emit enough progress output to
-            # fill an unread pipe and freeze startup. Startup failures are sent
-            # through the worker's JSON protocol instead.
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
+        threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True).start()
         msg = self._read_worker_event({"READY", "ERROR"})
         if msg.get("event") != "READY":
             raise RuntimeError(f"{self.engine.title()} worker startup error: " + str(msg.get("detail", msg)))
@@ -383,6 +415,26 @@ class TTSWorker:
             device=msg.get("device"), output_device=msg.get("output_device"),
             output_hostapi=msg.get("output_hostapi"), output_rate=msg.get("output_rate"),
         )
+
+    def _drain_stderr(self, proc):
+        try:
+            for line in proc.stderr:
+                line = line.strip()
+                # tqdm rewrites one progress bar hundreds of times. Draining it
+                # prevents deadlock; retaining each repaint makes the diagnostic
+                # log unusable, so keep warnings/errors and discard bar redraws.
+                if should_log_worker_stderr(line):
+                    log_event("TTS_WORKER_STDERR", text=line[:500])
+        except Exception as exc:
+            log_event("TTS_WORKER_STDERR_ERROR", detail=str(exc))
+
+    def _send_worker(self, payload):
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            raise RuntimeError("Chatterbox worker is not running.")
+        with self._stdin_lock:
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
 
     def _run(self):
         try:
@@ -450,11 +502,12 @@ class TTSWorker:
                 _dashboard.set_phase("speaking", "Speaking…")
             try:
                 sent_at = time.perf_counter()
-                payload = json.dumps({"text": text}, ensure_ascii=False)
-                self._proc.stdin.write(payload + "\n")
-                self._proc.stdin.flush()
+                self._send_worker({"text": text})
 
-                msg = self._read_worker_event({"AUDIO_START", "ERROR"})
+                msg = self._read_worker_event({"AUDIO_START", "CANCELLED", "ERROR"})
+                if msg.get("event") == "CANCELLED":
+                    log_event("TTS_CANCELLED", phase=msg.get("phase", "unknown"))
+                    continue
                 if msg.get("event") == "ERROR":
                     log_event("TTS_ERROR", detail=msg.get("detail", str(msg)))
                     continue
@@ -471,7 +524,7 @@ class TTSWorker:
                     ),
                 )
 
-                msg = self._read_worker_event({"SPOKEN", "ERROR"})
+                msg = self._read_worker_event({"SPOKEN", "CANCELLED", "ERROR"})
                 if msg.get("event") == "SPOKEN":
                     log_event(
                         "TTS_SPOKE",
@@ -480,6 +533,8 @@ class TTSWorker:
                         chars=msg.get("chars", len(text)),
                         playback_seconds=round(msg.get("playback_seconds", 0.0), 3),
                     )
+                elif msg.get("event") == "CANCELLED":
+                    log_event("TTS_CANCELLED", phase=msg.get("phase", "playback"))
                 else:
                     log_event("TTS_ERROR", detail=msg.get("detail", str(msg)))
             except Exception as exc:
@@ -498,8 +553,7 @@ class TTSWorker:
             return
         try:
             if proc.poll() is None:
-                proc.stdin.write(json.dumps({"cmd": "stop"}) + "\n")
-                proc.stdin.flush()
+                self._send_worker(worker_command("stop"))
                 proc.wait(timeout=5)
         except Exception:
             try:
@@ -549,17 +603,20 @@ class TTSWorker:
                 self._queue.put(self._STOP)
                 break
         proc = self._proc
-        if proc is not None and proc.poll() is None:
+        if proc is not None and proc.poll() is None and _tts_speaking.is_set():
             try:
-                proc.terminate()
-            except Exception:
-                pass
-        self._queue.put({"command": "restart", "reason": str(reason)})
+                self._send_worker(worker_command("cancel"))
+            except Exception as exc:
+                log_event("TTS_CANCEL_ERROR", detail=str(exc))
         log_event("TTS_INTERRUPTED", reason=reason, discarded=discarded)
 
     @property
     def startup_finished(self):
         return self._ready.is_set()
+
+    @property
+    def startup_error(self):
+        return self._startup_error
 
     def stop(self):
         self._queue.put(self._STOP)
@@ -613,7 +670,7 @@ def choose_microphone():
 
     CONFIG["mic_device"] = chosen
     try:
-        (ROOT / "config.json").write_text(json.dumps(CONFIG, indent=2), encoding="utf-8")
+        save_config()
     except Exception as exc:
         log_event("MIC_CONFIG_SAVE_ERROR", detail=str(exc))
 
@@ -754,6 +811,8 @@ class VoiceListener:
                     usage_event_id = record_billed_usage(
                         "transcription", self.transcription_model, 0, "local"
                     )
+                elif msg.get("event") == "CANCELLED":
+                    log_event("TTS_CANCELLED", phase=msg.get("phase", "playback"))
                 else:
                     with open(path, "rb") as f:
                         result = self.client.audio.transcriptions.create(
@@ -982,6 +1041,18 @@ def interruptible_sleep(seconds, listener):
     return pop_transcript(listener)
 
 
+def wait_and_handle_speech(seconds, listener, client, route, timeout, tts_worker, mem):
+    """The main loop's single wait/dispatch path for direct speech."""
+    turn = interruptible_sleep(seconds, listener)
+    if not turn:
+        return False
+    handle_spoken_turn(
+        client, route["model"], route["reasoning_effort"],
+        timeout, tts_worker, mem, turn,
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Self-imposed vision call cap, independent of provider-side rate limiting.
 # ---------------------------------------------------------------------------
@@ -1023,6 +1094,12 @@ def brain_context(query=""):
     if _brain is None:
         return "Ember Brain is not initialized."
     return json.dumps(_brain.context(query), ensure_ascii=False)
+
+
+def director_context():
+    if _director is None:
+        return "No performance direction is active."
+    return json.dumps(_director.context(), ensure_ascii=False)
 
 
 def apply_scene_context(scene, mem, stamp):
@@ -1424,6 +1501,14 @@ def call_model_streaming(
         event_id = record_billed_usage("conversation_response", model, 0, "unknown")
         update_usage_outcome(event_id, "api_error", str(exc))
         return None, ("API_ERROR", str(exc)), first_delta_at, event_id
+    except Exception as exc:
+        event_id = (
+            log_api_usage(failed_response, model, "conversation_response")
+            if failed_response is not None else
+            record_billed_usage("conversation_response", model, 0, "unknown")
+        )
+        update_usage_outcome(event_id, "api_error", str(exc))
+        return None, ("API_ERROR", str(exc)), first_delta_at, event_id
 
 
 def unload_local_model(model):
@@ -1445,14 +1530,6 @@ def unload_local_model(model):
         log_event("LOCAL_MODEL_UNLOADED", model=model, reason="yield_to_tts")
     except Exception as exc:
         log_event("LOCAL_MODEL_UNLOAD_ERROR", model=model, detail=str(exc))
-    except Exception as exc:
-        event_id = (
-            log_api_usage(failed_response, model, "conversation_response")
-            if failed_response is not None else
-            record_billed_usage("conversation_response", model, 0, "unknown")
-        )
-        update_usage_outcome(event_id, "api_error", str(exc))
-        return None, ("API_ERROR", str(exc)), first_delta_at, event_id
 
 
 
@@ -1469,7 +1546,9 @@ def handle_spoken_turn(
     if _brain is not None:
         speech_plan = _brain.observe_speech(transcript)
         log_event("BRAIN_PLAN", **speech_plan.__dict__)
-    record_memory_turn("Tony", transcript)
+        if _director is not None:
+            _director.observe_speech(transcript, speech_plan.tone)
+    record_memory_turn(COMPANION_USER_NAME, transcript)
     if _memory_store is not None and CONFIG.get("long_term_memory", True):
         learned = _memory_store.observe_utterance(transcript)
         if learned:
@@ -1490,11 +1569,11 @@ def handle_spoken_turn(
 
         if spotify_handled:
             stamp = datetime.now().isoformat(timespec="seconds")
-            print(f"Tony: {transcript}")
+            print(f"{COMPANION_USER_NAME}: {transcript}")
             print(f"Ember: {spotify_reply}")
             tts_worker.say(spotify_reply, timing)
             _last_companion_action_at = time.time()
-            mem["recent_observations"].append({"time": stamp, "note": f"Tony said: {transcript}"})
+            mem["recent_observations"].append({"time": stamp, "note": f"{COMPANION_USER_NAME} said: {transcript}"})
             mem["recent_utterances"].append({"time": stamp, "text": spotify_reply})
             record_memory_turn("Ember", spotify_reply)
             mem["recent_observations"] = mem["recent_observations"][-30:]
@@ -1513,10 +1592,10 @@ def handle_spoken_turn(
         img, capture_err = capture_screen()
         if capture_err:
             log_event("CAPTURE_ERROR", detail=capture_err)
-            return
+            log_event("CONVERSATION_AUDIO_ONLY", reason="screen_capture_failed")
 
     prompt = f"""
-Tony just said aloud:
+{COMPANION_USER_NAME} just said aloud:
 {transcript}
 
 Recent companion state:
@@ -1541,6 +1620,7 @@ Local World of Warcraft telemetry:
 {game_context()}
 
 This is a conversational turn, not an unsolicited observation.
+Do not return a SCENE line on this direct conversational turn.
 Use the current screenshot as shared context when one is available. If Tony is
 speaking to you or asking about what is on screen, answer naturally and briefly.
 If his speech is clearly directed at someone/something else and needs no reply,
@@ -1568,6 +1648,9 @@ when you can locate it and put your spoken reply in POINT's say field.
 
     def queue_streamed_phrase(text, phrase_index):
         nonlocal queued_phrases
+        text = normalize_spoken_text(text)
+        if not text or phrase_index > 2:
+            return
         queued_phrases += 1
         if os.getenv("EMBER_AI_PROVIDER", "openai").casefold() == "ollama":
             pending_local_phrases.append((text, phrase_index))
@@ -1620,9 +1703,10 @@ when you can locate it and put your spoken reply in POINT's say field.
     update_usage_outcome(usage_event_id, f"parsed_{kind.lower()}")
     stamp = datetime.now().isoformat(timespec="seconds")
 
-    mem["recent_observations"].append({"time": stamp, "note": f"Tony said: {transcript}"})
+    mem["recent_observations"].append({"time": stamp, "note": f"{COMPANION_USER_NAME} said: {transcript}"})
     if kind == "SAY" and content:
-        print(f"Tony: {transcript}")
+        content = normalize_spoken_text(content)
+        print(f"{COMPANION_USER_NAME}: {transcript}")
         print(f"Ember: {content}")
         if queued_phrases == 0:
             # Defensive fallback for an SDK/event-format mismatch.
@@ -1631,6 +1715,8 @@ when you can locate it and put your spoken reply in POINT's say field.
         record_memory_turn("Ember", content)
         if _brain is not None:
             _brain.record_response(content)
+        if _director is not None:
+            _director.observe_response("respond")
         log_event("VOICE_REPLY", heard=transcript, text=content,
                   api_call_count=_api_call_count)
         _last_companion_action_at = time.time()
@@ -1655,9 +1741,9 @@ when you can locate it and put your spoken reply in POINT's say field.
         try:
             action, entry_id, seconds = parse_video_action(content)
             command = _dashboard.youtube_command(
-                action, entry_id, seconds, source="sophia_direct"
+                action, entry_id, seconds, source="ember_direct"
             )
-            print(f"Tony: {transcript}")
+            print(f"{COMPANION_USER_NAME}: {transcript}")
             print(f"Ember [YouTube]: {command['action']} {command.get('title', '')}".rstrip())
             mem["recent_utterances"].append({
                 "time": stamp,
@@ -1687,7 +1773,7 @@ when you can locate it and put your spoken reply in POINT's say field.
 
 def main():
     global _spotify, _dashboard, _memory_store, _game_events, _session_id
-    global _world_state, _wow_adapter, _ember_overlay, _embodiment, _brain, _tts_worker
+    global _world_state, _wow_adapter, _ember_overlay, _embodiment, _brain, _director, _tts_worker
     global _last_companion_action_at, _budget_warning_emitted, _budget_pause_emitted
     provider = os.getenv("EMBER_AI_PROVIDER", "openai").casefold()
     if provider == "ollama":
@@ -1722,7 +1808,7 @@ def main():
         companion_effort=companion_effort,
         router_effort=router_effort,
     )
-    _memory_store = MemoryStore(ROOT / "sophia_memory.db")
+    _memory_store = MemoryStore(memory_database_path())
     _session_id = _memory_store.start_session()
     _game_events = GameEventEngine(
         ROOT, CONFIG,
@@ -1739,6 +1825,7 @@ def main():
             if _memory_store is not None else []
         ),
     )
+    _director = EmberDirector(CONFIG)
     if CONFIG.get("ember_overlay_enabled", True):
         try:
             _ember_overlay = EmberOverlay(
@@ -1765,7 +1852,7 @@ def main():
     try:
         _dashboard.start(
             port=int(CONFIG.get("dashboard_port", 8766)),
-            open_browser=bool(CONFIG.get("dashboard_open_browser", True)),
+            open_browser=bool(CONFIG.get("dashboard_open_browser", False)),
         )
         log_event("DASHBOARD_READY", url=f"http://127.0.0.1:{int(CONFIG.get('dashboard_port', 8766))}/")
     except Exception as exc:
@@ -1798,13 +1885,16 @@ def main():
         tts_worker.change_output_device,
     )
     print("Warming up Ember's voice...")
-    if tts_worker.wait_ready(float(CONFIG.get("tts_startup_block_seconds", 3))):
-        greeting = str(CONFIG.get("startup_greeting", "I'm awake and ready, Tony.")).strip()
-        if greeting:
-            tts_worker.say(greeting, wait=True, timeout=15)
-    elif not tts_worker.startup_finished:
+    greeting = str(CONFIG.get(
+        "startup_greeting", f"I'm awake and ready, {COMPANION_USER_NAME}."
+    )).strip()
+    if greeting:
+        # Queue before warm-up completes. The persistent worker will speak it as
+        # soon as READY arrives instead of silently skipping it after a slow load.
+        tts_worker.say(greeting)
+    if not tts_worker.wait_ready(float(CONFIG.get("tts_startup_block_seconds", 3))) and not tts_worker.startup_finished:
         log_event("TTS_WARMING_BACKGROUND", detail="Ember is available while Chatterbox loads.")
-    else:
+    elif tts_worker.startup_finished and tts_worker.startup_error is not None:
         log_event("TTS_UNAVAILABLE", detail="Ember will continue without spoken audio.")
     voice_listener = VoiceListener(client)
     _dashboard.set_microphone_controls(
@@ -1866,14 +1956,10 @@ def main():
                 if not _budget_pause_emitted:
                     _budget_pause_emitted = True
                     log_event("AUTONOMY_BUDGET_PAUSED", **current_budget)
-                transcript = interruptible_sleep(
-                    float(CONFIG["capture_interval_seconds"]), voice_listener
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
                 )
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
                 continue
 
             game_event = (
@@ -1884,26 +1970,27 @@ def main():
             screen_enabled = CONFIG.get("screen_awareness", True)
             spontaneous_enabled = CONFIG.get("spontaneous_remarks", True)
             if (not screen_enabled or not spontaneous_enabled) and not game_event:
-                transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
                 continue
 
             img = None
             capture_err = None
-            if screen_enabled:
+            telemetry_only_event = bool(
+                game_event and str(game_event.get("source") or "") in {
+                    "wow_pixel_bridge", "combat_log", "telemetry",
+                }
+            )
+            if screen_enabled and not telemetry_only_event:
                 img, capture_err = capture_screen()
             if capture_err and not game_event:
                 log_event("CAPTURE_ERROR", detail=capture_err)
-                transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
                 continue
 
             change = difference_score(previous, img) if img is not None else 0.0
@@ -1916,16 +2003,23 @@ def main():
             interesting_change = change >= float(CONFIG["screen_change_threshold"])
             quiet_trigger = silence >= float(CONFIG["quiet_time_soft_trigger_seconds"])
             gap_ok = silence >= float(CONFIG["minimum_comment_gap_seconds"])
-            triggered = bool(game_event) or (gap_ok and (interesting_change or quiet_trigger))
+            direction = _director.decide(
+                silence=silence,
+                change=change,
+                game_event=game_event,
+                quiet_trigger=bool(gap_ok and quiet_trigger),
+            )
+            triggered = bool(direction.act and (bool(game_event) or gap_ok))
 
             if not triggered:
-                log_event("NOT_TRIGGERED", change=round(change, 1), silence=int(silence))
-                transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
+                log_event(
+                    "NOT_TRIGGERED", change=round(change, 1), silence=int(silence),
+                    director_reason=direction.reason,
+                )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
                 continue
 
             if not game_event and not vision_rate_cap.allow():
@@ -1934,21 +2028,24 @@ def main():
                 # quiet during a genuinely eventful stretch.
                 log_event("VISION_RATE_CAPPED", change=round(change, 1),
                           max_per_minute=vision_rate_cap.max_per_minute)
-                transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
                 continue
 
             available_youtube = _dashboard.youtube_context(spontaneous=True)
             tool_after = max(2, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 4)))
             active_brain_plan = _brain.current_plan if _brain is not None and game_event else None
             critical_interrupt = bool(active_brain_plan and active_brain_plan.priority >= 9)
+            event_type = game_event.get("event_type") if game_event else None
+            talk_first_events = {
+                "boss_start", "boss_wipe", "player_death", "hardcore_player_death",
+                "critical_health", "danger_recovered",
+            }
             tool_turn = (
                 bool(game_event) or (interesting_change and autonomous_non_tool_streak >= tool_after)
-            ) and bool(available_youtube.get("videos")) and not critical_interrupt
+            ) and bool(available_youtube.get("videos")) and not critical_interrupt and event_type not in talk_first_events
             route = hybrid_route(
                 tool_turn=tool_turn,
                 has_game_event=bool(game_event),
@@ -1961,17 +2058,11 @@ def main():
             video_opening = bool(available_youtube.get("videos")) and player_status in {
                 "idle", "ready", "ended", "unstarted"
             }
-            event_type = game_event.get("event_type") if game_event else None
             if critical_interrupt:
                 reaction_mode = """
 CRITICAL BRAIN INTERRUPT: respond with SAY immediately. The Ember Brain plan is
 authoritative. Suppress unrelated topics, media actions, and running jokes. Make one
 brief response appropriate to the event's actual stakes.
-"""
-            elif tool_turn and event_type == "boss_start" and video_opening:
-                reaction_mode = """
-GAME EVENT TOOL TURN: a boss encounter just started. SAY is not allowed. Prefer
-a VIDEO whose use_when matches a boss fight. Use SILENT if none fits.
 """
             elif tool_turn and event_type in {"zone_change", "activity_change"} and video_opening:
                 reaction_mode = f"""
@@ -2018,6 +2109,12 @@ Accumulated visual scene context from earlier screenshots:
 Reaction policy for this decision:
 {reaction_mode}
 
+Ember Director performance intent:
+{json.dumps(direction.__dict__, ensure_ascii=False)}
+
+Persistent Director state:
+{director_context()}
+
 Reliable local game event:
 {json.dumps(game_event, ensure_ascii=False) if game_event else "None; infer cautiously from the screenshot."}
 
@@ -2036,7 +2133,8 @@ Saved YouTube videos and current player state:
 Local World of Warcraft telemetry:
 {game_context()}
 
-Look at the screenshot. Decide whether there is something worth saying.
+Use the screenshot when one is attached; otherwise rely on the explicitly labeled
+telemetry and accumulated scene state. Decide whether there is something worth saying.
 First return exactly one compact semantic line in this form:
 SCENE: {{"game":"if recognizable","location":"if recognizable","activity":"what Tony is doing","summary":"important stable visual facts","continuity":"how this relates to the prior scene","change":"what meaningfully changed","confidence":0.0,"targets":[]}}
 Then return exactly one SAY, SILENT, VIDEO, or POINT action line. Use empty strings
@@ -2066,12 +2164,10 @@ waiting for Tony to ask.
                 kind, detail = err
                 log_event(kind, detail=detail, api_call_count=_api_call_count)
                 set_body_state(BodyState.IDLE, "observation_error")
-                transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
                 continue
 
             stamp = datetime.now().isoformat(timespec="seconds")
@@ -2086,12 +2182,10 @@ waiting for Tony to ask.
                 log_event("MALFORMED_OUTPUT", raw=(raw_out or "")[:300],
                            api_call_count=_api_call_count)
                 set_body_state(BodyState.IDLE, "malformed_observation")
-                transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-                if transcript:
-                    handle_spoken_turn(
-                        client, direct_route["model"], direct_route["reasoning_effort"],
-                        request_timeout, tts_worker, mem, transcript,
-                    )
+                wait_and_handle_speech(
+                    float(CONFIG["capture_interval_seconds"]), voice_listener,
+                    client, direct_route, request_timeout, tts_worker, mem,
+                )
                 continue
 
             kind = match.group(1).upper()
@@ -2111,6 +2205,7 @@ waiting for Tony to ask.
                 content = "Tool-favored turn declined because no tool was selected."
 
             if kind == "SAY" and (gap_ok or critical_interrupt):
+                content = normalize_spoken_text(content)
                 print(f"Ember: {content}")
                 tts_worker.say(content)
                 last_spoken = now
@@ -2119,6 +2214,8 @@ waiting for Tony to ask.
                 record_memory_turn("Ember", content)
                 if _brain is not None:
                     _brain.record_response(content)
+                if _director is not None:
+                    _director.observe_response(direction.intent)
                 log_event("SAY", text=content, api_call_count=_api_call_count)
             elif kind == "POINT" and content:
                 try:
@@ -2142,7 +2239,7 @@ waiting for Tony to ask.
                 try:
                     action, entry_id, seconds = parse_video_action(content)
                     command = _dashboard.youtube_command(
-                        action, entry_id, seconds, source="sophia_spontaneous"
+                        action, entry_id, seconds, source="ember_spontaneous"
                     )
                     print(f"Ember [YouTube]: {command['action']} {command.get('title', '')}".rstrip())
                     last_spoken = now
@@ -2185,17 +2282,17 @@ waiting for Tony to ask.
                 non_tool_streak=autonomous_non_tool_streak,
                 api_call_count=_api_call_count,
             )
+            if _director is not None:
+                _director.observe_response(direction.intent)
 
             mem["recent_observations"] = mem["recent_observations"][-30:]
             mem["recent_utterances"] = mem["recent_utterances"][-30:]
             save_memory(mem)
 
-            transcript = interruptible_sleep(float(CONFIG["capture_interval_seconds"]), voice_listener)
-            if transcript:
-                handle_spoken_turn(
-                    client, direct_route["model"], direct_route["reasoning_effort"],
-                    request_timeout, tts_worker, mem, transcript,
-                )
+            wait_and_handle_speech(
+                float(CONFIG["capture_interval_seconds"]), voice_listener,
+                client, direct_route, request_timeout, tts_worker, mem,
+            )
     except KeyboardInterrupt:
         print("\nEmber is going to sleep.")
     finally:

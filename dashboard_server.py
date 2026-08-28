@@ -912,7 +912,7 @@ class DashboardHub:
             tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
             os.replace(tmp_path, config_path)
 
-    def start(self, port=8766, open_browser=True):
+    def start(self, port=8766, open_browser=False):
         hub = self
         dashboard_root = self.root / "dashboard_static"
         stylesheet_path = self.root / "dashboard" / "app" / "globals.css"
