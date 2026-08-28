@@ -7,3 +7,4 @@ pywin32>=306; sys_platform == "win32"
 numpy>=1.26,<3
 sounddevice>=0.4.6,<1
 onnxruntime>=1.16.1,<2
+faster-whisper>=1.1,<2

@@ -651,6 +651,8 @@ def available_audio_outputs():
 class VoiceListener:
     def __init__(self, client):
         self.client = client
+        self.transcription_provider = os.getenv("EMBER_TRANSCRIPTION_PROVIDER", "openai").casefold()
+        self.local_transcriber = None
         self.transcripts = queue.Queue()
         self.stop_event = threading.Event()
         self.reconnect_event = threading.Event()
@@ -675,6 +677,12 @@ class VoiceListener:
         self.max_speech = float(CONFIG.get("mic_max_speech_seconds", 15.0))
         self.device = choose_microphone()
         self.transcription_model = CONFIG.get("transcription_model", "gpt-4o-mini-transcribe")
+        if self.transcription_provider == "local":
+            from faster_whisper import WhisperModel
+            local_model = os.getenv("EMBER_LOCAL_TRANSCRIPTION_MODEL", "base.en")
+            self.local_transcriber = WhisperModel(local_model, device="cpu", compute_type="int8")
+            self.transcription_model = local_model
+            log_event("LOCAL_STT_READY", model=local_model, device="cpu")
         self.reconnect_delay = float(CONFIG.get("mic_reconnect_seconds", 2.0))
         self._transcribe_lock = threading.Lock()
 
@@ -729,44 +737,54 @@ class VoiceListener:
             path = self._write_wav(audio)
             usage_event_id = None
             try:
-                with open(path, "rb") as f:
-                    result = self.client.audio.transcriptions.create(
-                        model=self.transcription_model,
-                        file=f,
+                if self.local_transcriber is not None:
+                    segments, _ = self.local_transcriber.transcribe(
+                        path,
                         language=str(CONFIG.get("transcription_language", "en")),
-                        response_format="json",
-                        include=["logprobs"],
+                        beam_size=1,
+                        vad_filter=False,
                     )
+                    segments = list(segments)
+                    text = " ".join(segment.text.strip() for segment in segments).strip()
+                    average_logprob = (
+                        sum(segment.avg_logprob for segment in segments) / len(segments)
+                        if segments else None
+                    )
+                    result = None
+                    usage_event_id = record_billed_usage(
+                        "transcription", self.transcription_model, 0, "local"
+                    )
+                else:
+                    with open(path, "rb") as f:
+                        result = self.client.audio.transcriptions.create(
+                            model=self.transcription_model,
+                            file=f,
+                            language=str(CONFIG.get("transcription_language", "en")),
+                            response_format="json",
+                            include=["logprobs"],
+                        )
                 audio_seconds = len(audio) / self.sample_rate
-                usage = getattr(result, "usage", None)
-                usage_input = int(getattr(usage, "input_tokens", 0) or 0)
-                usage_output = int(getattr(usage, "output_tokens", 0) or 0)
-                reported_seconds = float(getattr(usage, "seconds", 0) or audio_seconds)
-                estimated_cost = transcription_cost(
-                    self.transcription_model, reported_seconds
-                )
-                usage_event_id = record_billed_usage(
-                    "transcription", self.transcription_model,
-                    estimated_cost or 0,
-                    (
-                        "duration_estimate" if estimated_cost is not None
-                        else "usage_returned_unpriced"
-                    ),
-                    input_tokens=usage_input, output_tokens=usage_output,
-                    audio_seconds=reported_seconds,
-                )
-                text = (getattr(result, "text", "") or "").strip()
-                if text:
-                    stt_finished_at = time.perf_counter()
+                if result is not None:
+                    usage = getattr(result, "usage", None)
+                    usage_input = int(getattr(usage, "input_tokens", 0) or 0)
+                    usage_output = int(getattr(usage, "output_tokens", 0) or 0)
+                    reported_seconds = float(getattr(usage, "seconds", 0) or audio_seconds)
+                    estimated_cost = transcription_cost(self.transcription_model, reported_seconds)
+                    usage_event_id = record_billed_usage(
+                        "transcription", self.transcription_model, estimated_cost or 0,
+                        "duration_estimate" if estimated_cost is not None else "usage_returned_unpriced",
+                        input_tokens=usage_input, output_tokens=usage_output,
+                        audio_seconds=reported_seconds,
+                    )
+                    text = (getattr(result, "text", "") or "").strip()
                     token_logprobs = [
                         float(item.logprob)
                         for item in (getattr(result, "logprobs", None) or [])
                         if getattr(item, "logprob", None) is not None
                     ]
-                    average_logprob = (
-                        sum(token_logprobs) / len(token_logprobs)
-                        if token_logprobs else None
-                    )
+                    average_logprob = sum(token_logprobs) / len(token_logprobs) if token_logprobs else None
+                if text:
+                    stt_finished_at = time.perf_counter()
                     voiced_seconds = max(
                         0.0,
                         float(speech_last_loud_at or speech_detected_at)
@@ -1636,14 +1654,24 @@ def main():
     global _spotify, _dashboard, _memory_store, _game_events, _session_id
     global _world_state, _wow_adapter, _ember_overlay, _embodiment, _brain, _tts_worker
     global _last_companion_action_at, _budget_warning_emitted, _budget_pause_emitted
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise SystemExit("Missing OPENAI_API_KEY. Copy .env.example to .env and add your key.")
-
-    client = OpenAI(api_key=key)
-    legacy_model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-    companion_model = os.getenv("OPENAI_COMPANION_MODEL", "gpt-5.6-terra")
-    router_model = os.getenv("OPENAI_ROUTER_MODEL", legacy_model)
+    provider = os.getenv("EMBER_AI_PROVIDER", "openai").casefold()
+    if provider == "ollama":
+        client = OpenAI(
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
+            api_key="ollama",
+        )
+        legacy_model = os.getenv("EMBER_LOCAL_MODEL", "qwen3-vl:8b-instruct")
+        companion_model = legacy_model
+        router_model = legacy_model
+        log_event("LOCAL_AI_CONFIGURED", provider="ollama", model=legacy_model)
+    else:
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise SystemExit("Missing OPENAI_API_KEY. Copy .env.example to .env and add your key.")
+        client = OpenAI(api_key=key)
+        legacy_model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+        companion_model = os.getenv("OPENAI_COMPANION_MODEL", "gpt-5.6-terra")
+        router_model = os.getenv("OPENAI_ROUTER_MODEL", legacy_model)
     companion_effort = str(CONFIG.get("companion_reasoning_effort", "low"))
     router_effort = str(CONFIG.get("router_reasoning_effort", "none"))
     direct_route = hybrid_route(
