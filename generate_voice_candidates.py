@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import wave
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -40,6 +41,23 @@ CANDIDATES = (
 )
 
 
+def normalize_streamed_wav_header(path):
+    """Replace the streaming sentinel sizes with the file's actual PCM length."""
+    path = Path(path)
+    with wave.open(str(path), "rb") as source:
+        channels = source.getnchannels()
+        sample_width = source.getsampwidth()
+        sample_rate = source.getframerate()
+        frames = source.readframes(source.getnframes())
+    repaired = path.with_suffix(".repaired.wav")
+    with wave.open(str(repaired), "wb") as output:
+        output.setnchannels(channels)
+        output.setsampwidth(sample_width)
+        output.setframerate(sample_rate)
+        output.writeframes(frames)
+    repaired.replace(path)
+
+
 def main():
     root = Path(__file__).parent
     load_dotenv(root / ".env")
@@ -56,6 +74,7 @@ def main():
             response_format="wav",
         ) as response:
             response.stream_to_file(output)
+        normalize_streamed_wav_header(output)
         print(output.resolve())
 
 
