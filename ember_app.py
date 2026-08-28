@@ -1,4 +1,4 @@
-import os, json, time, base64, io, re, threading, wave, tempfile, subprocess, urllib.request
+import os, json, time, base64, io, re, threading, wave, tempfile, urllib.request
 import shutil
 from pathlib import Path
 from datetime import datetime
@@ -10,10 +10,10 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import AtomicJsonStore, AutonomyCadence, BodyState, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, parse_model_action, plan_performance, response_content, wait_for_transcript
+from ember import AtomicJsonStore, AutonomyCadence, BodyState, ChatterboxProcess, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, UtteranceSegmenter, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, parse_model_action, plan_performance, response_content, wait_for_transcript
 from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
-from ember.tts_protocol import parse_worker_event, should_log_worker_stderr, worker_command
+from ember.tts_protocol import worker_command
 from game_events import GameEventEngine
 from memory_store import MemoryStore
 from model_routing import hybrid_route
@@ -309,8 +309,9 @@ class TTSWorker:
         self.helper = ROOT / "chatterbox_worker.py"
         self.name = "Chatterbox Turbo"
         self.voice = "chatterbox-turbo"
-        self._proc = None
-        self._stdin_lock = threading.Lock()
+        self._process = ChatterboxProcess(
+            ROOT, CONFIG, self.python, self.helper, log_event
+        )
         self._ready = threading.Event()
         self._startup_error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -332,84 +333,18 @@ class TTSWorker:
         log_event("TTS_OUTPUT_CHANGE_REQUESTED", output_device=name, output_hostapi=hostapi)
 
     def _read_worker_event(self, wanted):
-        while self._proc and self._proc.poll() is None:
-            line = self._proc.stdout.readline()
-            if line == "":
-                break
-            line = line.strip()
-            if not line:
-                continue
-            msg = parse_worker_event(line)
-            if msg is None:
-                log_event("TTS_WORKER_OUTPUT", text=line[:300])
-                continue
-            if msg.get("event") in wanted:
-                return msg
-            log_event("TTS_WORKER_OUTPUT", text=line[:300])
-        raise RuntimeError("Chatterbox worker stopped before expected event.")
+        return self._process.read_event(wanted)
 
     def _start_worker(self):
-        local_cache = ROOT / ".cache"
-        local_model = local_cache / "huggingface" / "hub" / "models--ResembleAI--chatterbox-turbo"
-        snapshots = local_model / "snapshots"
-        local_snapshot = next((
-            path for path in sorted(snapshots.glob("*"), reverse=True)
-            if (path / "t3_turbo_v1.safetensors").is_file()
-            and (path / "s3gen_meanflow.safetensors").is_file()
-        ), None)
-        args = [
-            self.python, "-u", str(self.helper),
-            str(CONFIG.get("chatterbox_voice_reference", "")),
-            str(CONFIG.get("tts_output_device", "")),
-            str(CONFIG.get("tts_output_hostapi", "")),
-            str(local_snapshot or ""),
-        ]
-        worker_env = os.environ.copy()
-        if CONFIG.get("portable_mode", False) or local_model.is_dir():
-            # Resolve Chatterbox's cache here rather than relying on the batch
-            # launcher's optional .portable marker. A mismatched cache looks like
-            # an endless warmup while Hugging Face downloads the model again.
-            worker_env["HF_HOME"] = str(local_cache / "huggingface")
-            worker_env["XDG_CACHE_HOME"] = str(local_cache)
-        self._proc = subprocess.Popen(
-            args,
-            cwd=str(ROOT),
-            env=worker_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True).start()
-        msg = self._read_worker_event({"READY", "ERROR"})
-        if msg.get("event") != "READY":
-            raise RuntimeError(f"{self.engine.title()} worker startup error: " + str(msg.get("detail", msg)))
+        msg = self._process.start()
         log_event(
             "TTS_READY", engine=self.engine, voice=msg.get("voice", self.voice),
             device=msg.get("device"), output_device=msg.get("output_device"),
             output_hostapi=msg.get("output_hostapi"), output_rate=msg.get("output_rate"),
         )
 
-    def _drain_stderr(self, proc):
-        try:
-            for line in proc.stderr:
-                line = line.strip()
-                # tqdm rewrites one progress bar hundreds of times. Draining it
-                # prevents deadlock; retaining each repaint makes the diagnostic
-                # log unusable, so keep warnings/errors and discard bar redraws.
-                if should_log_worker_stderr(line):
-                    log_event("TTS_WORKER_STDERR", text=line[:500])
-        except Exception as exc:
-            log_event("TTS_WORKER_STDERR_ERROR", detail=str(exc))
-
     def _send_worker(self, payload):
-        proc = self._proc
-        if proc is None or proc.poll() is not None:
-            raise RuntimeError("Chatterbox worker is not running.")
-        with self._stdin_lock:
-            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            proc.stdin.flush()
+        self._process.send(payload)
 
     def _run(self):
         try:
@@ -431,7 +366,7 @@ class TTSWorker:
                 continue
             if command == "restart":
                 self._shutdown_worker()
-                self._proc = None
+                self._process.proc = None
                 try:
                     self._start_worker()
                     self._startup_error = None
@@ -442,7 +377,7 @@ class TTSWorker:
                 continue
             if command == "change_output":
                 self._shutdown_worker()
-                self._proc = None
+                self._process.proc = None
                 try:
                     self._start_worker()
                     self._startup_error = None
@@ -523,23 +458,7 @@ class TTSWorker:
         self._shutdown_worker()
 
     def _shutdown_worker(self):
-        proc = self._proc
-        if proc is None:
-            return
-        try:
-            if proc.poll() is None:
-                self._send_worker(worker_command("stop"))
-                proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        self._proc = None
+        self._process.shutdown()
 
     def say(self, text, timing=None, wait=False, timeout=None, body_state=None):
         if CONFIG.get("speak_out_loud", True):
@@ -569,8 +488,7 @@ class TTSWorker:
         for pending in pending_performances:
             pending.finish(set_body_state, return_to_idle=False)
         discarded = len(pending_performances)
-        proc = self._proc
-        if proc is not None and proc.poll() is None and _tts_speaking.is_set():
+        if self._process.running and _tts_speaking.is_set():
             try:
                 self._send_worker(worker_command("cancel"))
             except Exception as exc:
@@ -893,12 +811,13 @@ class VoiceListener:
     def _run(self):
         blocksize = max(1, int(self.sample_rate * self.block_ms / 1000))
         first_open = True
+        segmenter = UtteranceSegmenter(
+            self.end_silence, self.min_speech, self.max_speech
+        )
 
         while not self.stop_event.is_set():
             self.reconnect_event.clear()
-            recording = []
-            speech_started = None
-            last_loud = None
+            segmenter.reset()
             if self.vad is not None:
                 self.vad.reset()
 
@@ -921,9 +840,7 @@ class VoiceListener:
                             log_event("MIC_OVERFLOW")
 
                         if _tts_speaking.is_set():
-                            recording = []
-                            speech_started = None
-                            last_loud = None
+                            segmenter.reset()
                             if self.vad is not None:
                                 self.vad.reset()
                             continue
@@ -938,40 +855,23 @@ class VoiceListener:
                         else:
                             voiced, speech_probability = rms >= self.threshold, None
 
-                        if voiced:
-                            if speech_started is None:
-                                speech_started = now
-                                recording = []
-                            last_loud = now
-                            recording.append(mono)
-                        elif speech_started is not None:
-                            recording.append(mono)
-
-                        if speech_started is not None:
-                            duration = now - speech_started
-                            ended = last_loud is not None and (now - last_loud) >= self.end_silence
-                            too_long = duration >= self.max_speech
-
-                            if ended or too_long:
-                                audio = np.concatenate(recording) if recording else np.array([], dtype=np.float32)
-                                if duration >= self.min_speech and len(audio):
-                                    # Serialize in _transcribe so fragments cannot race.
-                                    threading.Thread(
-                                        target=self._transcribe,
-                                        args=(audio, last_loud, time.perf_counter()),
-                                        daemon=True,
-                                    ).start()
-                                    log_event(
-                                        "MIC_UTTERANCE_DETECTED",
-                                        vad="silero" if self.vad is not None else "rms",
-                                        last_probability=(
-                                            round(speech_probability, 3)
-                                            if speech_probability is not None else None
-                                        ),
-                                    )
-                                recording = []
-                                speech_started = None
-                                last_loud = None
+                        utterance = segmenter.feed(mono, voiced, now)
+                        if utterance is not None:
+                            audio = np.concatenate(utterance.frames)
+                            # Serialize in _transcribe so fragments cannot race.
+                            threading.Thread(
+                                target=self._transcribe,
+                                args=(audio, utterance.last_loud_at, utterance.detected_at),
+                                daemon=True,
+                            ).start()
+                            log_event(
+                                "MIC_UTTERANCE_DETECTED",
+                                vad="silero" if self.vad is not None else "rms",
+                                last_probability=(
+                                    round(speech_probability, 3)
+                                    if speech_probability is not None else None
+                                ),
+                            )
 
             except Exception as e:
                 if self.stop_event.is_set():

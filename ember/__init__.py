@@ -10,9 +10,10 @@ from .model_protocol import ModelAction, StreamedSpeechParser, parse_model_actio
 from .performance_plan import PerformancePlan, plan_performance
 from .replay import ReplaySignal, replay_signals
 from .autonomy import AutonomyCadence, RateCap
-from .ears import TranscriptInbox, wait_for_transcript
+from .ears import CompletedUtterance, TranscriptInbox, UtteranceSegmenter, wait_for_transcript
 from .model_gateway import RetrySchedule, response_content
 from .tts_queue import SpeechQueue
+from .chatterbox_process import ChatterboxProcess, chatterbox_launch
 from .overlay import EmberOverlay, ReactionImages
 
 __all__ = [
@@ -23,8 +24,10 @@ __all__ = [
     "AtomicJsonStore", "SessionUsage", "default_companion_memory",
     "ModelAction", "StreamedSpeechParser", "parse_model_action",
     "PerformancePlan", "plan_performance", "ReplaySignal", "replay_signals",
-    "AutonomyCadence", "RateCap", "TranscriptInbox", "wait_for_transcript",
+    "AutonomyCadence", "RateCap", "CompletedUtterance", "TranscriptInbox",
+    "UtteranceSegmenter", "wait_for_transcript",
     "RetrySchedule", "response_content",
     "SpeechQueue",
+    "ChatterboxProcess", "chatterbox_launch",
     "EmberOverlay", "ReactionImages",
 ]
