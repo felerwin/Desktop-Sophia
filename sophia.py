@@ -1,4 +1,4 @@
-import os, json, time, base64, io, re, threading, queue, wave, tempfile, subprocess
+import os, json, time, base64, io, re, threading, queue, wave, tempfile, subprocess, urllib.request
 from pathlib import Path
 from datetime import datetime
 
@@ -1424,6 +1424,27 @@ def call_model_streaming(
         event_id = record_billed_usage("conversation_response", model, 0, "unknown")
         update_usage_outcome(event_id, "api_error", str(exc))
         return None, ("API_ERROR", str(exc)), first_delta_at, event_id
+
+
+def unload_local_model(model):
+    """Release Ollama's VRAM before Chatterbox begins synthesis."""
+    if os.getenv("EMBER_AI_PROVIDER", "openai").casefold() != "ollama":
+        return
+    try:
+        payload = json.dumps({
+            "model": model, "prompt": "", "stream": False, "keep_alive": 0,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "http://127.0.0.1:11434/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+        log_event("LOCAL_MODEL_UNLOADED", model=model, reason="yield_to_tts")
+    except Exception as exc:
+        log_event("LOCAL_MODEL_UNLOAD_ERROR", model=model, detail=str(exc))
     except Exception as exc:
         event_id = (
             log_api_usage(failed_response, model, "conversation_response")
@@ -1530,10 +1551,9 @@ when you can locate it and put your spoken reply in POINT's say field.
 """
     model_started_at = time.perf_counter()
     queued_phrases = 0
+    pending_local_phrases = []
 
-    def queue_streamed_phrase(text, phrase_index):
-        nonlocal queued_phrases
-        queued_phrases += 1
+    def deliver_streamed_phrase(text, phrase_index):
         phrase_timing = dict(timing)
         phrase_timing["phrase_index"] = phrase_index
         tts_worker.say(text, phrase_timing)
@@ -1545,6 +1565,14 @@ when you can locate it and put your spoken reply in POINT's say field.
                 time.perf_counter() - timing.get("speech_last_loud_at", time.perf_counter()), 3
             ),
         )
+
+    def queue_streamed_phrase(text, phrase_index):
+        nonlocal queued_phrases
+        queued_phrases += 1
+        if os.getenv("EMBER_AI_PROVIDER", "openai").casefold() == "ollama":
+            pending_local_phrases.append((text, phrase_index))
+        else:
+            deliver_streamed_phrase(text, phrase_index)
 
     log_event(
         "MODEL_ROUTED", role="companion", model=model,
@@ -1560,6 +1588,9 @@ when you can locate it and put your spoken reply in POINT's say field.
         queue_streamed_phrase,
         reasoning_effort=reasoning_effort,
     )
+    unload_local_model(model)
+    for phrase_text, phrase_index in pending_local_phrases:
+        deliver_streamed_phrase(phrase_text, phrase_index)
     model_finished_at = time.perf_counter()
     log_event(
         "MODEL_LATENCY",
@@ -2029,6 +2060,7 @@ waiting for Tony to ask.
                 reasoning_effort=route["reasoning_effort"],
                 call_type=f"autonomous_{route['role']}",
             )
+            unload_local_model(route["model"])
 
             if err:
                 kind, detail = err
