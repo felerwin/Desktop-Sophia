@@ -17,6 +17,8 @@
   "wow_pixel_search_margin": 16,
   "wow_combat_log_path": "",
   "wow_player_name": "",
+  "wow_character_class": "",
+  "wow_game_mode": "Standard",
   "music_autonomy": true,
   "youtube_volume": 70,
   "youtube_minimum_gap_seconds": 180,

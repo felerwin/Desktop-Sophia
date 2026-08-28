@@ -202,6 +202,8 @@ function renderGameEvents(game) {
   if (!gameConfigLoaded) {
     $("wowLogPath").value = game.configured_path || "";
     $("wowPlayerName").value = game.player_name || "";
+    $("wowCharacterClass").value = game.character_class || "";
+    $("wowGameMode").value = game.game_mode || "Standard";
     gameConfigLoaded = true;
   }
   const events = game.recent || [];
@@ -390,7 +392,12 @@ $("gameConfigForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   await fetch(`${apiBase}/api/game/config`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ log_path: $("wowLogPath").value, player_name: $("wowPlayerName").value }),
+    body: JSON.stringify({
+      log_path: $("wowLogPath").value,
+      player_name: $("wowPlayerName").value,
+      character_class: $("wowCharacterClass").value,
+      game_mode: $("wowGameMode").value,
+    }),
   });
   $("gameEventStatus").textContent = "Saved · restart Sophia if changing an active log";
 });

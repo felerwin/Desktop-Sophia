@@ -102,6 +102,8 @@ class GameEventEngine:
             "log_path": str(self.log_path) if self.log_path else None,
             "configured_path": str(self.config.get("wow_combat_log_path") or ""),
             "player_name": str(self.config.get("wow_player_name") or ""),
+            "character_class": str(self.config.get("wow_character_class") or ""),
+            "game_mode": str(self.config.get("wow_game_mode") or "Standard"),
             "last_error": self.last_error,
             "recent": list(self.events)[:30],
             "active_fight": self._fight_context(),
@@ -116,6 +118,8 @@ class GameEventEngine:
         return {
             "status": self.status,
             "player": str(self.config.get("wow_player_name") or ""),
+            "character_class": str(self.config.get("wow_character_class") or ""),
+            "game_mode": str(self.config.get("wow_game_mode") or "Standard"),
             "telemetry_available": telemetry_live,
             "telemetry_status": telemetry.get("status"),
             "telemetry_warning": (
@@ -175,7 +179,13 @@ class GameEventEngine:
                 self._finish_pixel_combat(now, forced_outcome="player_death")
                 self.inject(
                     "player_death", "Player death detected",
-                    {"health_percent": health, "target": self.live_state.get("target_name")},
+                    {
+                        "health_percent": health,
+                        "target": self.live_state.get("target_name"),
+                        "character": str(self.config.get("wow_player_name") or ""),
+                        "class": str(self.config.get("wow_character_class") or ""),
+                        "game_mode": str(self.config.get("wow_game_mode") or "Standard"),
+                    },
                     "wow_pixel_bridge",
                 )
             if (

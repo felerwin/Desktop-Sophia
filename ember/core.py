@@ -58,6 +58,9 @@ class WorldState:
         self.visual_confidence: float | None = None
         self.live: dict[str, Any] = {}
         self.targets: list[dict[str, Any]] = []
+        self.conversation_topic: str | None = None
+        self.user_tone: str | None = None
+        self.last_response: str | None = None
         self.events: deque[SemanticEvent] = deque(maxlen=event_limit)
         self.updated_at: str | None = None
 
@@ -107,6 +110,9 @@ class WorldState:
             "live": dict(self.live),
             "recent_events": [asdict(e) for e in list(self.events)[:recent_events]],
             "screen_targets": list(self.targets),
+            "conversation_topic": self.conversation_topic,
+            "user_tone": self.user_tone,
+            "last_response": self.last_response,
             "updated_at": self.updated_at,
         }
 

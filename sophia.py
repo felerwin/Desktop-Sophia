@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, VisualObservation, WorldState, body_state_for_speech
+from ember import BodyState, EmberBrain, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, VisualObservation, WorldState, body_state_for_speech
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -62,8 +62,8 @@ Let her character show through choices rather than self-description:
 - Keep her childlike rather than babyish: use clear sentences and real observations,
   not constant squealing, deliberate misspellings, helplessness, or a forced high-energy
   catchphrase. She can still focus, listen, and be gentle when Tony is serious.
-- Build running jokes and callbacks from supplied memories and recent events instead
-  of resetting to generic friendliness each turn.
+- Use running jokes only when Ember Brain explicitly lists one as available. A joke
+  is never evidence about the world and must not become the interpretation of later events.
 - Speak naturally with contractions and varied rhythms. Avoid habitual assistant
   openers such as "Gotcha," "Absolutely," "Fair enough," and "Looks like" unless they
   genuinely fit. Do not merely paraphrase Tony before answering him.
@@ -171,6 +171,8 @@ _world_state = None
 _wow_adapter = None
 _ember_overlay = None
 _embodiment = None
+_brain = None
+_tts_worker = None
 _session_id = None
 _shutdown_requested = threading.Event()
 
@@ -398,6 +400,17 @@ class TTSWorker:
 
             if item.get("command") == "change_voice":
                 continue
+            if item.get("command") == "restart":
+                self._shutdown_worker()
+                self._proc = None
+                try:
+                    self._start_worker()
+                    self._startup_error = None
+                    log_event("TTS_RESTARTED", reason=item.get("reason", "interrupt"))
+                except Exception as exc:
+                    self._startup_error = str(exc)
+                    log_event("TTS_ERROR", detail=str(exc))
+                continue
             if item.get("command") == "change_output":
                 self._shutdown_worker()
                 self._proc = None
@@ -518,6 +531,29 @@ class TTSWorker:
             log_event("TTS_STILL_WARMING", waited_seconds=timeout)
             return False
         return self._startup_error is None
+
+    def interrupt(self, reason="higher_priority_event"):
+        """Stop the active line and discard stale queued lines."""
+        discarded = 0
+        while True:
+            try:
+                pending = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(pending, SpeechPerformance):
+                pending.finish(set_body_state, return_to_idle=False)
+                discarded += 1
+            elif pending is self._STOP:
+                self._queue.put(self._STOP)
+                break
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        self._queue.put({"command": "restart", "reason": str(reason)})
+        log_event("TTS_INTERRUPTED", reason=reason, discarded=discarded)
 
     @property
     def startup_finished(self):
@@ -930,6 +966,12 @@ def visual_context():
     }, ensure_ascii=False)
 
 
+def brain_context(query=""):
+    if _brain is None:
+        return "Ember Brain is not initialized."
+    return json.dumps(_brain.context(query), ensure_ascii=False)
+
+
 def apply_scene_context(scene, mem, stamp):
     if not scene:
         return
@@ -971,6 +1013,14 @@ def record_memory_tool():
 
 
 def handle_game_event(event):
+    plan = _brain.observe_game_event(event) if _brain is not None else None
+    if plan is not None:
+        event["salience"] = plan.priority
+        event["brain_topic"] = plan.topic
+        event["allow_running_bits"] = plan.allow_running_bits
+        if plan.interrupt and _tts_worker is not None:
+            _tts_worker.interrupt(f"game_event:{event.get('event_type')}")
+        log_event("BRAIN_PLAN", **plan.__dict__)
     if _wow_adapter is not None:
         _wow_adapter.ingest_event(event)
     if _memory_store is not None:
@@ -1342,6 +1392,9 @@ def handle_spoken_turn(
     set_body_state(BodyState.LISTENING, "direct_speech")
     transcript = turn["text"]
     timing = turn.get("timing", {})
+    if _brain is not None:
+        speech_plan = _brain.observe_speech(transcript)
+        log_event("BRAIN_PLAN", **speech_plan.__dict__)
     record_memory_turn("Tony", transcript)
     if _memory_store is not None and CONFIG.get("long_term_memory", True):
         learned = _memory_store.observe_utterance(transcript)
@@ -1398,8 +1451,8 @@ Recent companion state:
 Accumulated visual scene context from earlier screenshots:
 {visual_context()}
 
-Relevant long-term memories (use only when genuinely relevant; never invent details):
-{long_term_memory_context(transcript)}
+Ember Brain's unified state and response plan (follow this over stale dialogue or jokes):
+{brain_context(transcript)}
 
 Current personality profile:
 {personality_context()}
@@ -1492,6 +1545,8 @@ when you can locate it and put your spoken reply in POINT's say field.
             queue_streamed_phrase(content, 1)
         mem["recent_utterances"].append({"time": stamp, "text": content})
         record_memory_turn("Sophia", content)
+        if _brain is not None:
+            _brain.record_response(content)
         log_event("VOICE_REPLY", heard=transcript, text=content,
                   api_call_count=_api_call_count)
         _last_companion_action_at = time.time()
@@ -1548,7 +1603,7 @@ when you can locate it and put your spoken reply in POINT's say field.
 
 def main():
     global _spotify, _dashboard, _memory_store, _game_events, _session_id
-    global _world_state, _wow_adapter, _ember_overlay, _embodiment
+    global _world_state, _wow_adapter, _ember_overlay, _embodiment, _brain, _tts_worker
     global _last_companion_action_at, _budget_warning_emitted, _budget_pause_emitted
     key = os.getenv("OPENAI_API_KEY")
     if not key:
@@ -1576,6 +1631,14 @@ def main():
     )
     _world_state = WorldState()
     _wow_adapter = WowTelemetryAdapter(_world_state)
+    _brain = EmberBrain(
+        _world_state,
+        CONFIG,
+        memory_retriever=(
+            lambda query, limit: _memory_store.relevant(query, limit=limit)
+            if _memory_store is not None else []
+        ),
+    )
     if CONFIG.get("ember_overlay_enabled", True):
         try:
             _ember_overlay = EmberOverlay(
@@ -1628,6 +1691,7 @@ def main():
     request_timeout = float(CONFIG.get("api_timeout_seconds", 20))
     vision_rate_cap = RateCap(int(CONFIG.get("max_vision_calls_per_minute", 6)))
     tts_worker = TTSWorker()
+    _tts_worker = tts_worker
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
     _dashboard.set_audio_output_controls(
         available_audio_outputs(),
@@ -1780,9 +1844,11 @@ def main():
 
             available_youtube = _dashboard.youtube_context(spontaneous=True)
             tool_after = max(2, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 4)))
+            active_brain_plan = _brain.current_plan if _brain is not None and game_event else None
+            critical_interrupt = bool(active_brain_plan and active_brain_plan.priority >= 9)
             tool_turn = (
                 bool(game_event) or (interesting_change and autonomous_non_tool_streak >= tool_after)
-            ) and bool(available_youtube.get("videos"))
+            ) and bool(available_youtube.get("videos")) and not critical_interrupt
             route = hybrid_route(
                 tool_turn=tool_turn,
                 has_game_event=bool(game_event),
@@ -1796,7 +1862,13 @@ def main():
                 "idle", "ready", "ended", "unstarted"
             }
             event_type = game_event.get("event_type") if game_event else None
-            if tool_turn and event_type == "boss_start" and video_opening:
+            if critical_interrupt:
+                reaction_mode = """
+CRITICAL BRAIN INTERRUPT: respond with SAY immediately. The Ember Brain plan is
+authoritative. Suppress unrelated topics, media actions, and running jokes. Make one
+brief response appropriate to the event's actual stakes.
+"""
+            elif tool_turn and event_type == "boss_start" and video_opening:
                 reaction_mode = """
 GAME EVENT TOOL TURN: a boss encounter just started. SAY is not allowed. Prefer
 a VIDEO whose use_when matches a boss fight. Use SILENT if none fits.
@@ -1852,8 +1924,8 @@ Reliable local game event:
 Recent companion state:
 {compact_context(mem)}
 
-Relevant long-term memories:
-{long_term_memory_context((game_event or {}).get("title", "") + " " + compact_context(mem))}
+Ember Brain's unified state and response plan. It outranks stale dialogue and running jokes:
+{brain_context((game_event or {}).get("title", ""))}
 
 Current personality profile:
 {personality_context()}
@@ -1937,13 +2009,15 @@ waiting for Tony to ask.
                 kind = "SILENT"
                 content = "Tool-favored turn declined because no tool was selected."
 
-            if kind == "SAY" and gap_ok:
+            if kind == "SAY" and (gap_ok or critical_interrupt):
                 print(f"Sophia: {content}")
                 tts_worker.say(content)
                 last_spoken = now
                 _last_companion_action_at = now
                 mem["recent_utterances"].append({"time": stamp, "text": content})
                 record_memory_turn("Sophia", content)
+                if _brain is not None:
+                    _brain.record_response(content)
                 log_event("SAY", text=content, api_call_count=_api_call_count)
             elif kind == "POINT" and content:
                 try:

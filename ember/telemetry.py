@@ -17,6 +17,9 @@ class WowTelemetryAdapter:
             return
         self.world.game = "World of Warcraft"
         self.world.apply_live_state(context.get("live_state") or {})
+        activity = context.get("activity") or {}
+        if activity.get("name") and activity.get("name") != "unknown":
+            self.world.activity = str(activity["name"])
         for raw in reversed((context.get("recent_events") or [])[:8]):
             self.ingest_event(raw)
 

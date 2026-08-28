@@ -102,7 +102,7 @@
             <div><span>Activity</span><strong id="wowActivity">Unknown</strong><small id="wowActivityMeta">Waiting for a stable state</small></div>
           </div>
           <div class="wowGear" id="wowGear"><div class="soundEmpty"><strong>Waiting for equipment</strong><span>The live bridge will transmit equipped items after login.</span></div></div>
-          <form id="gameConfigForm" class="gameConfigForm"><input id="wowLogPath" placeholder="WoWCombatLog.txt path · auto-detect by default"><input id="wowPlayerName" placeholder="Character name · improves death detection"><button type="submit">Save</button></form>
+          <form id="gameConfigForm" class="gameConfigForm"><input id="wowLogPath" placeholder="WoWCombatLog.txt path · auto-detect by default"><input id="wowPlayerName" placeholder="Player character name"><input id="wowCharacterClass" placeholder="Class · e.g. Hunter"><select id="wowGameMode" aria-label="WoW game mode"><option value="Standard">Standard</option><option value="Hardcore">Hardcore</option></select><button type="submit">Save</button></form>
           <div class="eventTestRow"><span>Test signal</span><button type="button" data-test-event="boss_start">Boss pull</button><button type="button" data-test-event="boss_victory">Victory</button><button type="button" data-test-event="player_death">Death</button><button type="button" data-test-event="quest_complete">Quest</button></div>
           <div class="eventList" id="eventList"><div class="soundEmpty"><strong>No game events yet</strong><span>WoW combat-log events will appear here.</span></div></div>
         </article>

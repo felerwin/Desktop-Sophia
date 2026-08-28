@@ -754,10 +754,13 @@ class DashboardHub:
         self.body_test_handler(states)
         return {"preset": preset, "states": states}
 
-    def update_game_config(self, log_path, player_name):
+    def update_game_config(self, log_path, player_name, character_class="", game_mode="Standard"):
         with self.lock:
             self.config["wow_combat_log_path"] = str(log_path or "").strip()
             self.config["wow_player_name"] = str(player_name or "").strip()[:80]
+            self.config["wow_character_class"] = str(character_class or "").strip()[:40]
+            mode = str(game_mode or "Standard").strip().title()
+            self.config["wow_game_mode"] = mode if mode in {"Standard", "Hardcore"} else "Standard"
             config_path = self.root / "config.json"
             tmp_path = config_path.with_suffix(".tmp")
             tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
@@ -767,6 +770,8 @@ class DashboardHub:
         return {
             "wow_combat_log_path": self.config["wow_combat_log_path"],
             "wow_player_name": self.config["wow_player_name"],
+            "wow_character_class": self.config["wow_character_class"],
+            "wow_game_mode": self.config["wow_game_mode"],
         }
 
     def add_sound(self, original_name, encoded_data):
@@ -1019,7 +1024,8 @@ class DashboardHub:
                         self._json({"ok": True, "sequence": sequence})
                     elif path == "/api/game/config":
                         settings = hub.update_game_config(
-                            payload.get("log_path"), payload.get("player_name")
+                            payload.get("log_path"), payload.get("player_name"),
+                            payload.get("character_class"), payload.get("game_mode"),
                         )
                         self._json({"ok": True, "settings": settings})
                     elif path == "/api/budget/resume":
