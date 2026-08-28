@@ -1,4 +1,4 @@
-import os, json, time, base64, io, re, threading, wave, tempfile, urllib.request
+import os, json, time, base64, io, re, threading, urllib.request
 import shutil
 from pathlib import Path
 from datetime import datetime
@@ -6,21 +6,17 @@ from datetime import datetime
 from dotenv import load_dotenv
 from PIL import Image, ImageChops, ImageStat
 import mss
-import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import AtomicJsonStore, AutonomyCadence, BodyState, ChatterboxProcess, EmberBrain, EmberDirector, EmberSpeechService, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, UtteranceSegmenter, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, normalize_local_transcription, normalize_provider_transcription, parse_model_action, plan_performance, response_content, wait_for_transcript
-from ember.vad import SileroVoiceActivityDetector
+from ember import AtomicJsonStore, AutonomyCadence, BodyState, EmberBrain, EmberDirector, EmberEarsService, EmberSpeechService, EmbodimentController, EmberOverlay, ModelGateway, RateCap, ScreenTarget, SpriteBodyAdapter, VisualObservation, WorldState, available_audio_outputs, default_companion_memory, parse_model_action, plan_performance, wait_for_transcript
 from ember.telemetry import WowTelemetryAdapter
-from ember.tts_protocol import worker_command
 from game_events import GameEventEngine
 from memory_store import MemoryStore
 from model_routing import hybrid_route
-from speech_filter import transcript_rejection_reason
 from speech_naturalizer import normalize_spoken_text
 from spotify_control import SpotifyClient, SpotifyError
-from usage_costs import budget_decision, response_cost, transcription_cost
+from usage_costs import budget_decision, response_cost
 from visual_context import parse_scene_envelope, scene_memory_note
 
 ROOT = Path(__file__).parent
@@ -302,589 +298,10 @@ def image_data_url(img):
 
 
 # ---------------------------------------------------------------------------
-# TTS: one persistent engine + a queue, instead of spinning up a new engine
-# per utterance. Also the only place that can produce TTS_ERROR.
-# ---------------------------------------------------------------------------
-
-class LegacyTTSWorker:
-    def __init__(self):
-        self._queue = SpeechQueue()
-        self.engine = "chatterbox"
-        self.python = configured_python(
-            CONFIG.get("chatterbox_python"), ROOT / ".chatterbox_venv" / "Scripts" / "python.exe"
-        )
-        self.helper = ROOT / "chatterbox_worker.py"
-        self.name = "Chatterbox Turbo"
-        self.voice = "chatterbox-turbo"
-        self._process = ChatterboxProcess(
-            ROOT, CONFIG, self.python, self.helper, log_event
-        )
-        self._ready = threading.Event()
-        self._startup_error = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def change_voice(self, voice, language, name):
-        log_event("VOICE_CHANGE_IGNORED", engine=self.engine)
-
-    def change_output_device(self, name, hostapi):
-        CONFIG["tts_output_device"] = str(name)
-        CONFIG["tts_output_hostapi"] = str(hostapi)
-        self._ready.clear()
-        self._startup_error = None
-        if self._thread.is_alive():
-            self._queue.put({"command": "change_output"})
-        else:
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-        log_event("TTS_OUTPUT_CHANGE_REQUESTED", output_device=name, output_hostapi=hostapi)
-
-    def _read_worker_event(self, wanted):
-        return self._process.read_event(wanted)
-
-    def _start_worker(self):
-        msg = self._process.start()
-        log_event(
-            "TTS_READY", engine=self.engine, voice=msg.get("voice", self.voice),
-            device=msg.get("device"), output_device=msg.get("output_device"),
-            output_hostapi=msg.get("output_hostapi"), output_rate=msg.get("output_rate"),
-        )
-
-    def _send_worker(self, payload):
-        self._process.send(payload)
-
-    def _run(self):
-        try:
-            self._start_worker()
-        except Exception as exc:
-            self._startup_error = str(exc)
-            log_event("TTS_ERROR", detail=str(exc))
-            self._ready.set()
-            return
-        self._ready.set()
-
-        while True:
-            item = self._queue.get()
-            if item is self._queue.STOP:
-                break
-
-            command = item.get("command") if isinstance(item, dict) else None
-            if command == "change_voice":
-                continue
-            if command == "restart":
-                self._shutdown_worker()
-                self._process.proc = None
-                try:
-                    self._start_worker()
-                    self._startup_error = None
-                    log_event("TTS_RESTARTED", reason=item.get("reason", "interrupt"))
-                except Exception as exc:
-                    self._startup_error = str(exc)
-                    log_event("TTS_ERROR", detail=str(exc))
-                continue
-            if command == "change_output":
-                self._shutdown_worker()
-                self._process.proc = None
-                try:
-                    self._start_worker()
-                    self._startup_error = None
-                    log_event(
-                        "TTS_OUTPUT_CHANGED",
-                        output_device=CONFIG.get("tts_output_device"),
-                        output_hostapi=CONFIG.get("tts_output_hostapi"),
-                    )
-                    if _dashboard is not None:
-                        _dashboard.set_phase("listening", "I’m listening.")
-                except Exception as exc:
-                    self._startup_error = str(exc)
-                    log_event("TTS_ERROR", detail=str(exc))
-                finally:
-                    self._ready.set()
-                continue
-
-            performance = item if isinstance(item, SpeechPerformance) else SpeechPerformance(
-                text=item["text"],
-                timing=item.get("timing", {}),
-                opening_state=item.get("body_state"),
-                done=item.get("done"),
-            )
-            text = performance.text
-            timing = performance.timing
-            speech_state = performance.opening_state or BodyState.SPEAKING
-            _tts_speaking.set()
-            performance.begin(set_body_state)
-            if performance.expressive:
-                log_event("BODY_SPEECH_REACTION", state=speech_state.value, text=text[:120])
-            if _dashboard is not None:
-                _dashboard.set_phase("speaking", "Speaking…")
-            try:
-                sent_at = time.perf_counter()
-                self._send_worker({"text": text})
-
-                msg = self._read_worker_event({"AUDIO_START", "CANCELLED", "ERROR"})
-                if msg.get("event") == "CANCELLED":
-                    log_event("TTS_CANCELLED", phase=msg.get("phase", "unknown"))
-                    continue
-                if msg.get("event") == "ERROR":
-                    log_event("TTS_ERROR", detail=msg.get("detail", str(msg)))
-                    continue
-
-                audio_start_at = time.perf_counter()
-                performance.audio_started(set_body_state)
-                log_event(
-                    "TTS_AUDIO_START",
-                    phrase_index=timing.get("phrase_index", 1),
-                    queue_wait_seconds=round(sent_at - timing.get("queued_at", sent_at), 3),
-                    synthesis_seconds=round(msg.get("synthesis_seconds", audio_start_at - sent_at), 3),
-                    response_latency_seconds=round(
-                        audio_start_at - timing.get("speech_last_loud_at", audio_start_at), 3
-                    ),
-                )
-
-                msg = self._read_worker_event({"SPOKEN", "CANCELLED", "ERROR"})
-                if msg.get("event") == "SPOKEN":
-                    log_event(
-                        "TTS_SPOKE",
-                        engine=self.engine,
-                        voice=self.voice,
-                        chars=msg.get("chars", len(text)),
-                        playback_seconds=round(msg.get("playback_seconds", 0.0), 3),
-                    )
-                elif msg.get("event") == "CANCELLED":
-                    log_event("TTS_CANCELLED", phase=msg.get("phase", "playback"))
-                else:
-                    log_event("TTS_ERROR", detail=msg.get("detail", str(msg)))
-            except Exception as exc:
-                log_event("TTS_ERROR", detail=str(exc))
-            finally:
-                _tts_speaking.clear()
-                performance.finish(set_body_state, return_to_idle=self._queue.empty())
-                if self._queue.empty() and _dashboard is not None:
-                    _dashboard.set_phase("listening", "I’m listening.")
-
-        self._shutdown_worker()
-
-    def _shutdown_worker(self):
-        self._process.shutdown()
-
-    def say(self, text, timing=None, wait=False, timeout=None, body_state=None):
-        if CONFIG.get("speak_out_loud", True):
-            timing = dict(timing or {})
-            timing["queued_at"] = time.perf_counter()
-            done = threading.Event() if wait else None
-            self._queue.put(SpeechPerformance(
-                text=text,
-                timing=timing,
-                done=done,
-                opening_state=body_state or body_state_for_speech(text),
-            ))
-            if done is not None:
-                return done.wait(timeout)
-        return False
-
-    def wait_ready(self, timeout=60):
-        """Block startup until the configured engine can speak or has definitively failed."""
-        if not self._ready.wait(timeout):
-            log_event("TTS_STILL_WARMING", waited_seconds=timeout)
-            return False
-        return self._startup_error is None
-
-    def interrupt(self, reason="higher_priority_event"):
-        """Stop the active line and discard stale queued lines."""
-        pending_performances = self._queue.drain_performances()
-        for pending in pending_performances:
-            pending.finish(set_body_state, return_to_idle=False)
-        discarded = len(pending_performances)
-        if self._process.running and _tts_speaking.is_set():
-            try:
-                self._send_worker(worker_command("cancel"))
-            except Exception as exc:
-                log_event("TTS_CANCEL_ERROR", detail=str(exc))
-        log_event("TTS_INTERRUPTED", reason=reason, discarded=discarded)
-
-    @property
-    def startup_finished(self):
-        return self._ready.is_set()
-
-    @property
-    def startup_error(self):
-        return self._startup_error
-
-    def stop(self):
-        self._queue.stop()
-        self._thread.join(timeout=7)
-        if self._thread.is_alive():
-            self._shutdown_worker()
-
-
-# ---------------------------------------------------------------------------
 # Ears: local voice-activity detection + OpenAI transcription.
 # The microphone is ignored while Ember is speaking so she does not hear
 # her own Windows TTS. Transcripts are queued for the main loop.
 # ---------------------------------------------------------------------------
-
-def choose_microphone():
-    """Use the saved input device without blocking startup for a prompt.
-
-    If Windows has renumbered or removed that device, fall back to the current
-    default input (or the first available input) and remember the replacement.
-    """
-    try:
-        devices = sd.query_devices()
-    except Exception as exc:
-        log_event("MIC_DEVICE_QUERY_ERROR", detail=str(exc))
-        return CONFIG.get("mic_device", None)
-
-    inputs = []
-    for index, info in enumerate(devices):
-        if int(info.get("max_input_channels", 0)) > 0:
-            inputs.append((index, info))
-
-    if not inputs:
-        print("\nNo microphone input devices found. Using system default.\n")
-        CONFIG["mic_device"] = None
-        return None
-
-    saved = CONFIG.get("mic_device", None)
-    try:
-        saved = int(saved) if saved is not None else None
-    except (TypeError, ValueError):
-        saved = None
-
-    default_input = sd.default.device[0]
-    valid_indices = {index for index, _ in inputs}
-    if saved in valid_indices:
-        chosen = saved
-    elif default_input is not None and int(default_input) in valid_indices:
-        chosen = int(default_input)
-    else:
-        chosen = inputs[0][0]
-
-    CONFIG["mic_device"] = chosen
-    try:
-        save_config()
-    except Exception as exc:
-        log_event("MIC_CONFIG_SAVE_ERROR", detail=str(exc))
-
-    try:
-        name = sd.query_devices(chosen, "input")["name"]
-    except Exception:
-        name = str(chosen)
-    print(f"Ember will listen through: {name}")
-    return chosen
-
-
-def available_audio_outputs():
-    """Return selectable output devices with stable labels for the dashboard."""
-    try:
-        devices = sd.query_devices()
-        hostapis = sd.query_hostapis()
-        return [
-            {
-                "id": str(index),
-                "index": index,
-                "name": str(info.get("name", f"Output {index}")),
-                "hostapi": str(hostapis[int(info["hostapi"])]["name"]),
-                "label": (
-                    f"{info.get('name', f'Output {index}')} · "
-                    f"{hostapis[int(info['hostapi'])]['name']}"
-                ),
-            }
-            for index, info in enumerate(devices)
-            if int(info.get("max_output_channels", 0)) > 0
-        ]
-    except Exception as exc:
-        log_event("AUDIO_OUTPUT_QUERY_ERROR", detail=str(exc))
-        return []
-
-class VoiceListener:
-    def __init__(self, client):
-        self.client = client
-        self.transcription_provider = os.getenv("EMBER_TRANSCRIPTION_PROVIDER", "openai").casefold()
-        self.local_transcriber = None
-        self.transcripts = TranscriptInbox()
-        self.stop_event = threading.Event()
-        self.reconnect_event = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-        self.sample_rate = int(CONFIG.get("mic_sample_rate", 16000))
-        self.block_ms = int(CONFIG.get("mic_block_ms", 100))
-        self.threshold = float(CONFIG.get("mic_rms_threshold", 0.018))
-        self.vad_threshold = float(CONFIG.get("mic_vad_threshold", 0.5))
-        self.vad = None
-        if str(CONFIG.get("mic_vad_engine", "silero")).casefold() == "silero":
-            try:
-                self.vad = SileroVoiceActivityDetector(
-                    ROOT / "ember" / "models" / "silero_vad.onnx", self.sample_rate
-                )
-                self.block_ms = 1000 * self.vad.FRAME_SAMPLES / self.sample_rate
-                log_event("MIC_VAD_READY", engine="silero", threshold=self.vad_threshold)
-            except Exception as exc:
-                log_event("MIC_VAD_FALLBACK", engine="rms", detail=str(exc))
-        self.end_silence = float(CONFIG.get("mic_end_silence_seconds", 0.8))
-        self.min_speech = float(CONFIG.get("mic_min_speech_seconds", 0.35))
-        self.max_speech = float(CONFIG.get("mic_max_speech_seconds", 15.0))
-        self.device = choose_microphone()
-        self.transcription_model = CONFIG.get("transcription_model", "gpt-4o-mini-transcribe")
-        if self.transcription_provider == "local":
-            from faster_whisper import WhisperModel
-            local_model = os.getenv("EMBER_LOCAL_TRANSCRIPTION_MODEL", "base.en")
-            self.local_transcriber = WhisperModel(local_model, device="cpu", compute_type="int8")
-            self.transcription_model = local_model
-            log_event("LOCAL_STT_READY", model=local_model, device="cpu")
-        self.reconnect_delay = float(CONFIG.get("mic_reconnect_seconds", 2.0))
-        self._transcribe_lock = threading.Lock()
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.stop_event.set()
-        self.reconnect_event.set()
-
-    @staticmethod
-    def available_devices():
-        try:
-            return [
-                {
-                    "index": index,
-                    "name": info.get("name", f"Input {index}"),
-                    "hostapi": info.get("hostapi"),
-                }
-                for index, info in enumerate(sd.query_devices())
-                if int(info.get("max_input_channels", 0)) > 0
-            ]
-        except Exception as exc:
-            log_event("MIC_DEVICE_QUERY_ERROR", detail=str(exc))
-            return []
-
-    def change_device(self, device_index):
-        device_index = int(device_index)
-        valid_indices = {item["index"] for item in self.available_devices()}
-        if device_index not in valid_indices:
-            raise ValueError("That microphone is no longer available.")
-        self.device = device_index
-        self.reconnect_event.set()
-        log_event("MIC_CHANGE_REQUESTED", device_index=device_index)
-
-    def _write_wav(self, audio):
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        tmp.close()
-        with wave.open(tmp.name, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(self.sample_rate)
-            pcm = np.clip(audio, -1.0, 1.0)
-            wf.writeframes((pcm * 32767).astype(np.int16).tobytes())
-        return tmp.name
-
-    def _transcribe(self, audio, speech_last_loud_at, speech_detected_at):
-        # Keep utterances in order. Multiple simultaneous transcription calls
-        # made sentence fragments race each other during the first ears test.
-        with self._transcribe_lock:
-            stt_started_at = time.perf_counter()
-            path = self._write_wav(audio)
-            usage_event_id = None
-            try:
-                if self.local_transcriber is not None:
-                    segments, _ = self.local_transcriber.transcribe(
-                        path,
-                        language=str(CONFIG.get("transcription_language", "en")),
-                        beam_size=1,
-                        vad_filter=False,
-                    )
-                    normalized = normalize_local_transcription(
-                        segments, len(audio) / self.sample_rate
-                    )
-                    usage_event_id = record_billed_usage(
-                        "transcription", self.transcription_model, 0, "local"
-                    )
-                else:
-                    with open(path, "rb") as f:
-                        result = self.client.audio.transcriptions.create(
-                            model=self.transcription_model,
-                            file=f,
-                            language=str(CONFIG.get("transcription_language", "en")),
-                            response_format="json",
-                            include=["logprobs"],
-                        )
-                    normalized = normalize_provider_transcription(
-                        result, len(audio) / self.sample_rate
-                    )
-                audio_seconds = len(audio) / self.sample_rate
-                if self.local_transcriber is None:
-                    estimated_cost = transcription_cost(
-                        self.transcription_model, normalized.audio_seconds
-                    )
-                    usage_event_id = record_billed_usage(
-                        "transcription", self.transcription_model, estimated_cost or 0,
-                        "duration_estimate" if estimated_cost is not None else "usage_returned_unpriced",
-                        input_tokens=normalized.input_tokens,
-                        output_tokens=normalized.output_tokens,
-                        audio_seconds=normalized.audio_seconds,
-                    )
-                text = normalized.text
-                average_logprob = normalized.average_logprob
-                if text:
-                    stt_finished_at = time.perf_counter()
-                    voiced_seconds = max(
-                        0.0,
-                        float(speech_last_loud_at or speech_detected_at)
-                        - float(speech_detected_at - len(audio) / self.sample_rate),
-                    )
-                    rejection = transcript_rejection_reason(
-                        text,
-                        average_logprob=average_logprob,
-                        voiced_seconds=voiced_seconds,
-                        minimum_logprob=CONFIG.get(
-                            "mic_local_minimum_transcript_logprob", -1.0
-                        ) if self.local_transcriber is not None else CONFIG.get(
-                            "mic_minimum_transcript_logprob", -0.7
-                        ),
-                        short_fragment_seconds=CONFIG.get(
-                            "mic_short_fragment_seconds", 0.45
-                        ),
-                    )
-                    if CONFIG.get("mic_filter_ambient_speech", True) and rejection:
-                        update_usage_outcome(
-                            usage_event_id, "transcript_rejected", rejection
-                        )
-                        log_event(
-                            "TRANSCRIPT_REJECTED",
-                            text=text,
-                            reason=rejection,
-                            average_logprob=(
-                                round(average_logprob, 3)
-                                if average_logprob is not None else None
-                            ),
-                            voiced_seconds=round(voiced_seconds, 3),
-                        )
-                        return
-                    update_usage_outcome(usage_event_id, "transcript_accepted")
-                    timing = {
-                        "speech_last_loud_at": speech_last_loud_at,
-                        "speech_detected_at": speech_detected_at,
-                        "stt_finished_at": stt_finished_at,
-                    }
-                    self.transcripts.put({"text": text, "timing": timing})
-                    log_event(
-                        "HEARD",
-                        text=text,
-                        endpoint_wait_seconds=round(speech_detected_at - speech_last_loud_at, 3),
-                        stt_seconds=round(stt_finished_at - stt_started_at, 3),
-                        average_logprob=(
-                            round(average_logprob, 3)
-                            if average_logprob is not None else None
-                        ),
-                        )
-                else:
-                    update_usage_outcome(usage_event_id, "empty_transcript")
-            except Exception as e:
-                if usage_event_id is None:
-                    usage_event_id = record_billed_usage(
-                        "transcription", self.transcription_model, 0,
-                        "unknown", audio_seconds=len(audio) / self.sample_rate,
-                    )
-                update_usage_outcome(usage_event_id, "api_error", str(e))
-                log_event("STT_ERROR", detail=str(e))
-            finally:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
-
-    def _device_label(self):
-        try:
-            if self.device is None:
-                idx = sd.default.device[0]
-            elif isinstance(self.device, int):
-                idx = self.device
-            else:
-                idx = self.device
-            info = sd.query_devices(idx, "input")
-            return f"{info.get('name', idx)} (index={idx}, hostapi={info.get('hostapi')})"
-        except Exception as e:
-            return f"{self.device or 'default'} (details unavailable: {e})"
-
-    def _run(self):
-        blocksize = max(1, int(self.sample_rate * self.block_ms / 1000))
-        first_open = True
-        segmenter = UtteranceSegmenter(
-            self.end_silence, self.min_speech, self.max_speech
-        )
-
-        while not self.stop_event.is_set():
-            self.reconnect_event.clear()
-            segmenter.reset()
-            if self.vad is not None:
-                self.vad.reset()
-
-            try:
-                device_label = self._device_label()
-                with sd.InputStream(
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=blocksize,
-                    device=self.device,
-                ) as stream:
-                    log_event("MIC_READY" if first_open else "MIC_RECONNECTED",
-                              device=device_label)
-                    first_open = False
-
-                    while not self.stop_event.is_set() and not self.reconnect_event.is_set():
-                        data, overflowed = stream.read(blocksize)
-                        if overflowed:
-                            log_event("MIC_OVERFLOW")
-
-                        if _tts_speaking.is_set():
-                            segmenter.reset()
-                            if self.vad is not None:
-                                self.vad.reset()
-                            continue
-
-                        mono = data[:, 0].copy()
-                        rms = float(np.sqrt(np.mean(np.square(mono)))) if len(mono) else 0.0
-                        now = time.perf_counter()
-                        if self.vad is not None:
-                            voiced, speech_probability = self.vad.is_speech(
-                                mono, self.vad_threshold
-                            )
-                        else:
-                            voiced, speech_probability = rms >= self.threshold, None
-
-                        utterance = segmenter.feed(mono, voiced, now)
-                        if utterance is not None:
-                            audio = np.concatenate(utterance.frames)
-                            # Serialize in _transcribe so fragments cannot race.
-                            threading.Thread(
-                                target=self._transcribe,
-                                args=(audio, utterance.last_loud_at, utterance.detected_at),
-                                daemon=True,
-                            ).start()
-                            log_event(
-                                "MIC_UTTERANCE_DETECTED",
-                                vad="silero" if self.vad is not None else "rms",
-                                last_probability=(
-                                    round(speech_probability, 3)
-                                    if speech_probability is not None else None
-                                ),
-                            )
-
-            except Exception as e:
-                if self.stop_event.is_set():
-                    break
-                log_event("MIC_DISCONNECTED", detail=str(e), device=self._device_label())
-                log_event("MIC_RECONNECTING", retrying_in_seconds=self.reconnect_delay)
-                # PortAudio can retain stale default-device state after a game
-                # opens/closes an endpoint. Re-querying devices before retrying
-                # nudges it to refresh its view of Windows audio.
-                try:
-                    sd.query_devices()
-                except Exception:
-                    pass
-                self.stop_event.wait(self.reconnect_delay)
-
 
 def pop_transcript(listener):
     return listener.transcripts.pop()
@@ -1183,115 +600,42 @@ def call_model(
     client, model, prompt, img, timeout_seconds, reasoning_effort="none",
     call_type="autonomous_response", max_retries=2,
 ):
-    """Returns (raw_text, error, usage_event_id). Usage is persisted before parsing."""
+    """Thin orchestration wrapper around the provider gateway."""
+    return model_gateway(client).call(
+        model, prompt, img, timeout_seconds, reasoning_effort,
+        call_type, max_retries,
+    )
+
+
+def count_api_call():
     global _api_call_count
-    retry = RetrySchedule(max_retries=max_retries, initial_seconds=2.0)
-    for attempt in range(max_retries + 1):
-        _api_call_count += 1
-        try:
-            response = client.with_options(timeout=timeout_seconds).responses.create(
-                model=model,
-                instructions=SYSTEM,
-                reasoning={"effort": reasoning_effort},
-                input=response_content(prompt, image_data_url(img) if img is not None else None),
-            )
-            usage_event_id = log_api_usage(response, model, call_type)
-            return response.output_text, None, usage_event_id
-        except APITimeoutError as e:
-            event_id = record_billed_usage(
-                call_type, model, 0, "unknown"
-            )
-            update_usage_outcome(event_id, "timeout", str(e))
-            return None, ("TIMEOUT", str(e)), event_id
-        except RateLimitError as e:
-            delay = retry.delay_after(attempt)
-            if delay is not None:
-                log_event("RATE_LIMITED", attempt=attempt + 1, retrying_in_seconds=delay)
-                time.sleep(delay)
-                continue
-            event_id = record_billed_usage(
-                call_type, model, 0, "not_billed_rate_limit"
-            )
-            update_usage_outcome(event_id, "rate_limited", str(e))
-            return None, ("RATE_LIMITED", str(e)), event_id
-        except APIError as e:
-            event_id = record_billed_usage(call_type, model, 0, "unknown")
-            update_usage_outcome(event_id, "api_error", str(e))
-            return None, ("API_ERROR", str(e)), event_id
-        except Exception as e:
-            event_id = record_billed_usage(call_type, model, 0, "unknown")
-            update_usage_outcome(event_id, "api_error", str(e))
-            return None, ("API_ERROR", str(e)), event_id
-    return None, ("RATE_LIMITED", "max retries exceeded"), None
+    _api_call_count += 1
+
+
+def model_gateway(client):
+    return ModelGateway(
+        client=client,
+        instructions=SYSTEM,
+        image_encoder=image_data_url,
+        log_usage=log_api_usage,
+        record_usage=record_billed_usage,
+        update_outcome=update_usage_outcome,
+        log_event=log_event,
+        count_call=count_api_call,
+        timeout_error=APITimeoutError,
+        rate_limit_error=RateLimitError,
+        api_error=APIError,
+    )
 
 
 def call_model_streaming(
     client, model, prompt, img, timeout_seconds, on_phrase,
     reasoning_effort="low",
 ):
-    """Stream a conversational response and queue validated SAY phrases early."""
-    global _api_call_count
-    _api_call_count += 1
-    parser = StreamedSpeechParser(on_phrase)
-    first_delta_at = None
-    completed_response = None
-    failed_response = None
-    try:
-        stream = client.with_options(timeout=timeout_seconds).responses.create(
-            model=model,
-            instructions=SYSTEM,
-            reasoning={"effort": reasoning_effort},
-            input=response_content(prompt, image_data_url(img) if img is not None else None),
-            stream=True,
-        )
-        for event in stream:
-            event_type = getattr(event, "type", "")
-            if event_type == "response.output_text.delta":
-                delta = getattr(event, "delta", "") or ""
-                if delta:
-                    if first_delta_at is None:
-                        first_delta_at = time.perf_counter()
-                    parser.feed(delta)
-            elif event_type == "response.completed":
-                completed_response = getattr(event, "response", None)
-            elif event_type in {"response.failed", "error"}:
-                failed_response = getattr(event, "response", None)
-                raise RuntimeError(str(event))
-
-        parser.finish()
-        usage_event_id = None
-        if completed_response is not None:
-            usage_event_id = log_api_usage(
-                completed_response, model, "conversation_response"
-            )
-        else:
-            usage_event_id = record_billed_usage(
-                "conversation_response", model, 0, "unknown"
-            )
-            update_usage_outcome(usage_event_id, "incomplete_stream")
-        return parser.raw, None, first_delta_at, usage_event_id
-    except APITimeoutError as exc:
-        event_id = record_billed_usage("conversation_response", model, 0, "unknown")
-        update_usage_outcome(event_id, "timeout", str(exc))
-        return None, ("TIMEOUT", str(exc)), first_delta_at, event_id
-    except RateLimitError as exc:
-        event_id = record_billed_usage(
-            "conversation_response", model, 0, "not_billed_rate_limit"
-        )
-        update_usage_outcome(event_id, "rate_limited", str(exc))
-        return None, ("RATE_LIMITED", str(exc)), first_delta_at, event_id
-    except APIError as exc:
-        event_id = record_billed_usage("conversation_response", model, 0, "unknown")
-        update_usage_outcome(event_id, "api_error", str(exc))
-        return None, ("API_ERROR", str(exc)), first_delta_at, event_id
-    except Exception as exc:
-        event_id = (
-            log_api_usage(failed_response, model, "conversation_response")
-            if failed_response is not None else
-            record_billed_usage("conversation_response", model, 0, "unknown")
-        )
-        update_usage_outcome(event_id, "api_error", str(exc))
-        return None, ("API_ERROR", str(exc)), first_delta_at, event_id
+    """Thin orchestration wrapper around the streaming provider gateway."""
+    return model_gateway(client).stream(
+        model, prompt, img, timeout_seconds, on_phrase, reasoning_effort,
+    )
 
 
 def unload_local_model(model):
@@ -1671,7 +1015,7 @@ def main():
     _tts_worker = tts_worker
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
     _dashboard.set_audio_output_controls(
-        available_audio_outputs(),
+        available_audio_outputs(log_event),
         tts_worker.change_output_device,
     )
     print("Warming up Ember's voice...")
@@ -1686,7 +1030,10 @@ def main():
         log_event("TTS_WARMING_BACKGROUND", detail="Ember is available while Chatterbox loads.")
     elif tts_worker.startup_finished and tts_worker.startup_error is not None:
         log_event("TTS_UNAVAILABLE", detail="Ember will continue without spoken audio.")
-    voice_listener = VoiceListener(client)
+    voice_listener = EmberEarsService(
+        ROOT, CONFIG, client, _tts_speaking, log_event,
+        record_billed_usage, update_usage_outcome, save_config,
+    )
     _dashboard.set_microphone_controls(
         voice_listener.available_devices(),
         voice_listener.device,

@@ -11,11 +11,12 @@ from .performance_plan import PerformancePlan, plan_performance
 from .replay import ReplaySignal, replay_signals
 from .autonomy import AutonomyCadence, RateCap
 from .ears import CompletedUtterance, TranscriptInbox, UtteranceSegmenter, wait_for_transcript
-from .model_gateway import RetrySchedule, response_content
+from .model_gateway import ModelGateway, RetrySchedule, response_content
 from .tts_queue import SpeechQueue
 from .chatterbox_process import ChatterboxProcess, chatterbox_launch
 from .transcription import TranscriptionResult, normalize_local_transcription, normalize_provider_transcription
 from .speech_service import EmberSpeechService
+from .ears_service import EmberEarsService, available_audio_outputs
 from .overlay import EmberOverlay, ReactionImages
 
 __all__ = [
@@ -28,10 +29,11 @@ __all__ = [
     "PerformancePlan", "plan_performance", "ReplaySignal", "replay_signals",
     "AutonomyCadence", "RateCap", "CompletedUtterance", "TranscriptInbox",
     "UtteranceSegmenter", "wait_for_transcript",
-    "RetrySchedule", "response_content",
+    "ModelGateway", "RetrySchedule", "response_content",
     "SpeechQueue",
     "ChatterboxProcess", "chatterbox_launch",
     "TranscriptionResult", "normalize_local_transcription", "normalize_provider_transcription",
     "EmberSpeechService",
+    "EmberEarsService", "available_audio_outputs",
     "EmberOverlay", "ReactionImages",
 ]
