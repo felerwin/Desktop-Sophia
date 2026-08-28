@@ -191,6 +191,13 @@ def test_body_sequence(states):
     _embodiment.perform([BodyState(state) for state in states], "dashboard_test")
 
 
+def handle_body_interaction(kind):
+    if kind == "headpat":
+        if _director is not None:
+            _director.observe_affection("headpat")
+        log_event("BODY_INTERACTION", kind="headpat", mood="affectionate")
+
+
 BODY_EVENT_SEQUENCES = {
     "combat_start": [BodyState.STARTLED],
     "boss_start": [BodyState.STARTLED, BodyState.CONCERNED],
@@ -1610,6 +1617,7 @@ def main():
                 wander=bool(CONFIG.get("ember_wander_enabled", True)),
                 wander_min_seconds=float(CONFIG.get("ember_wander_min_seconds", 22)),
                 wander_max_seconds=float(CONFIG.get("ember_wander_max_seconds", 50)),
+                interaction_handler=handle_body_interaction,
             )
             if not _ember_overlay.start():
                 raise RuntimeError(_ember_overlay.error or "overlay did not become ready")

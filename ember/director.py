@@ -72,6 +72,13 @@ class EmberDirector:
         if intent != "respond":
             self.last_initiative_at = self.clock()
 
+    def observe_affection(self, kind="headpat"):
+        self.mood = "affectionate"
+        self.engagement = min(1.0, self.engagement + 0.2)
+        self.last_emotion_at = self.clock()
+        self.last_intent = str(kind)
+        self.intent_history.append(str(kind))
+
     def add_curiosity(self, topic, source="scene"):
         normalized = " ".join(str(topic or "").split())[:180]
         if not normalized:

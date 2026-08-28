@@ -5,11 +5,15 @@ from pathlib import Path
 
 from dashboard_server import DashboardHub
 from ember import BodyState, EmbodimentController, ReactionImages, WorldState, body_state_for_speech
-from ember.overlay import EmberOverlay, direction_degrees, target_destination
+from ember.overlay import EmberOverlay, direction_degrees, is_headpat_point, target_destination
 from ember.telemetry import WowTelemetryAdapter
 
 
 class EmberWorldStateTests(unittest.TestCase):
+    def test_headpat_hitbox_is_small_and_head_shaped(self):
+        self.assertTrue(is_headpat_point(96, 30, 192, 208))
+        self.assertFalse(is_headpat_point(10, 30, 192, 208))
+        self.assertFalse(is_headpat_point(96, 180, 192, 208))
     def test_spoken_lines_choose_conversational_emotes(self):
         self.assertEqual(body_state_for_speech("That is hilarious."), BodyState.LAUGHING)
         self.assertEqual(body_state_for_speech("I told you that would work."), BodyState.SMUG)

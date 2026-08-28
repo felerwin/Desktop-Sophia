@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 import math
 import queue
 import random
@@ -72,6 +73,11 @@ def target_destination(target) -> tuple[int, int]:
     return target[0], target[1]
 
 
+def is_headpat_point(x: int, y: int, width: int, height: int) -> bool:
+    """Small upper-center hitbox; the remainder of Ember stays click-through."""
+    return width * 0.24 <= x <= width * 0.76 and 0 <= y <= height * 0.42
+
+
 class EmberOverlay:
     """Owns a small Tk overlay on a dedicated UI thread."""
 
@@ -108,13 +114,14 @@ class EmberOverlay:
     def __init__(
         self, reactions_path: str | Path, scale: float = 1.0,
         wander: bool = True, wander_min_seconds: float = 22.0,
-        wander_max_seconds: float = 50.0,
+        wander_max_seconds: float = 50.0, interaction_handler=None,
     ):
         self.images = ReactionImages(reactions_path)
         self.scale = max(0.5, min(2.0, float(scale)))
         self.wander = bool(wander)
         self.wander_min_seconds = max(8.0, float(wander_min_seconds))
         self.wander_max_seconds = max(self.wander_min_seconds, float(wander_max_seconds))
+        self.interaction_handler = interaction_handler
         self.commands: queue.Queue[dict[str, Any]] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -163,7 +170,7 @@ class EmberOverlay:
             root.update()
             root.wm_attributes("-transparentcolor", transparent)
             root.attributes("-topmost", True)
-            self._make_click_through(root.winfo_id())
+            self._make_headpat_hit_test(root.winfo_id(), width, height)
 
             reaction = "idle"
             frame = self._scaled_reaction(reaction)
@@ -200,6 +207,20 @@ class EmberOverlay:
                 if reaction_sequence:
                     set_reaction(reaction_sequence.pop(0))
                     next_reaction_at = time.monotonic() + REACTION_SEQUENCE_MS / 1000
+
+            def on_headpat(event) -> None:
+                nonlocal next_wander_at
+                if not is_headpat_point(event.x, event.y, width, height):
+                    return
+                start_sequence(["startled", "affectionate", "shy", "affectionate"])
+                next_wander_at = time.monotonic() + self.wander_min_seconds
+                if self.interaction_handler is not None:
+                    try:
+                        self.interaction_handler("headpat")
+                    except Exception:
+                        traceback.print_exc()
+
+            label.bind("<Button-1>", on_headpat)
 
             def recover_callback(exc_type, exc, tb) -> None:
                 """Keep one failed Tk refresh callback from freezing Ember in place."""
@@ -362,4 +383,41 @@ class EmberOverlay:
         set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
         ex_style = get_style(hwnd, -20)
         set_style(hwnd, -20, ex_style | 0x00000020 | 0x00000080 | 0x08000000)
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+
+    def _make_headpat_hit_test(self, hwnd: int, width: int, height: int) -> None:
+        """Return mouse hits only over the head and pass all other clicks below."""
+        if not hasattr(ctypes, "windll"):
+            return
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetAncestor(hwnd, 2) or hwnd
+        get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+        set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+        get_style.restype = ctypes.c_ssize_t
+        set_style.restype = ctypes.c_ssize_t
+        user32.CallWindowProcW.restype = ctypes.c_ssize_t
+        ex_style = get_style(hwnd, -20)
+        set_style(hwnd, -20, (ex_style | 0x00080000 | 0x00000080 | 0x08000000) & ~0x00000020)
+        WM_NCHITTEST, HTCLIENT, HTTRANSPARENT = 0x0084, 1, -1
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint,
+            ctypes.c_size_t, ctypes.c_ssize_t,
+        )
+        original = get_style(hwnd, -4)
+
+        def window_proc(window, message, wparam, lparam):
+            if message == WM_NCHITTEST:
+                screen_x = ctypes.c_short(lparam & 0xFFFF).value
+                screen_y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                rect = wintypes.RECT()
+                user32.GetWindowRect(window, ctypes.byref(rect))
+                if is_headpat_point(screen_x - rect.left, screen_y - rect.top, width, height):
+                    return HTCLIENT
+                return HTTRANSPARENT
+            return user32.CallWindowProcW(original, window, message, wparam, lparam)
+
+        callback = WNDPROC(window_proc)
+        self._headpat_wndproc = callback
+        self._original_wndproc = original
+        set_style(hwnd, -4, ctypes.cast(callback, ctypes.c_void_p).value)
         user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)

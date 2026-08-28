@@ -68,6 +68,14 @@ class EmberDirectorTests(unittest.TestCase):
         director.decide(silence=0, change=0)
         self.assertEqual(director.mood, "warm")
 
+    def test_headpat_updates_affection_and_engagement(self):
+        director = EmberDirector()
+        before = director.engagement
+        director.observe_affection()
+        self.assertEqual(director.mood, "affectionate")
+        self.assertGreater(director.engagement, before)
+        self.assertEqual(director.context()["last_intent"], "headpat")
+
 
 if __name__ == "__main__":
     unittest.main()
