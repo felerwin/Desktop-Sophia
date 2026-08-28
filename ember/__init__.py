@@ -14,6 +14,7 @@ from .ears import CompletedUtterance, TranscriptInbox, UtteranceSegmenter, wait_
 from .model_gateway import RetrySchedule, response_content
 from .tts_queue import SpeechQueue
 from .chatterbox_process import ChatterboxProcess, chatterbox_launch
+from .transcription import TranscriptionResult, normalize_local_transcription, normalize_provider_transcription
 from .overlay import EmberOverlay, ReactionImages
 
 __all__ = [
@@ -29,5 +30,6 @@ __all__ = [
     "RetrySchedule", "response_content",
     "SpeechQueue",
     "ChatterboxProcess", "chatterbox_launch",
+    "TranscriptionResult", "normalize_local_transcription", "normalize_provider_transcription",
     "EmberOverlay", "ReactionImages",
 ]

@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import AtomicJsonStore, AutonomyCadence, BodyState, ChatterboxProcess, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, UtteranceSegmenter, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, parse_model_action, plan_performance, response_content, wait_for_transcript
+from ember import AtomicJsonStore, AutonomyCadence, BodyState, ChatterboxProcess, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, UtteranceSegmenter, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, normalize_local_transcription, normalize_provider_transcription, parse_model_action, plan_performance, response_content, wait_for_transcript
 from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
 from ember.tts_protocol import worker_command
@@ -686,18 +686,12 @@ class VoiceListener:
                         beam_size=1,
                         vad_filter=False,
                     )
-                    segments = list(segments)
-                    text = " ".join(segment.text.strip() for segment in segments).strip()
-                    average_logprob = (
-                        sum(segment.avg_logprob for segment in segments) / len(segments)
-                        if segments else None
+                    normalized = normalize_local_transcription(
+                        segments, len(audio) / self.sample_rate
                     )
-                    result = None
                     usage_event_id = record_billed_usage(
                         "transcription", self.transcription_model, 0, "local"
                     )
-                elif msg.get("event") == "CANCELLED":
-                    log_event("TTS_CANCELLED", phase=msg.get("phase", "playback"))
                 else:
                     with open(path, "rb") as f:
                         result = self.client.audio.transcriptions.create(
@@ -707,26 +701,23 @@ class VoiceListener:
                             response_format="json",
                             include=["logprobs"],
                         )
+                    normalized = normalize_provider_transcription(
+                        result, len(audio) / self.sample_rate
+                    )
                 audio_seconds = len(audio) / self.sample_rate
-                if result is not None:
-                    usage = getattr(result, "usage", None)
-                    usage_input = int(getattr(usage, "input_tokens", 0) or 0)
-                    usage_output = int(getattr(usage, "output_tokens", 0) or 0)
-                    reported_seconds = float(getattr(usage, "seconds", 0) or audio_seconds)
-                    estimated_cost = transcription_cost(self.transcription_model, reported_seconds)
+                if self.local_transcriber is None:
+                    estimated_cost = transcription_cost(
+                        self.transcription_model, normalized.audio_seconds
+                    )
                     usage_event_id = record_billed_usage(
                         "transcription", self.transcription_model, estimated_cost or 0,
                         "duration_estimate" if estimated_cost is not None else "usage_returned_unpriced",
-                        input_tokens=usage_input, output_tokens=usage_output,
-                        audio_seconds=reported_seconds,
+                        input_tokens=normalized.input_tokens,
+                        output_tokens=normalized.output_tokens,
+                        audio_seconds=normalized.audio_seconds,
                     )
-                    text = (getattr(result, "text", "") or "").strip()
-                    token_logprobs = [
-                        float(item.logprob)
-                        for item in (getattr(result, "logprobs", None) or [])
-                        if getattr(item, "logprob", None) is not None
-                    ]
-                    average_logprob = sum(token_logprobs) / len(token_logprobs) if token_logprobs else None
+                text = normalized.text
+                average_logprob = normalized.average_logprob
                 if text:
                     stt_finished_at = time.perf_counter()
                     voiced_seconds = max(
