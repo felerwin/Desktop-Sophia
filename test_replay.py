@@ -18,6 +18,16 @@ class ReplayTests(unittest.TestCase):
         signals = [ReplaySignal(1000, silence=200, quiet_trigger=True)]
         self.assertEqual(replay_signals(signals), replay_signals(signals))
 
+    def test_replay_exposes_duplicate_event_suppression(self):
+        event = {"event_type": "valuable_loot", "title": "same sword", "salience": 5}
+        timeline = replay_signals([
+            ReplaySignal(1000, game_event=event),
+            ReplaySignal(1005, game_event=event),
+        ])
+        self.assertTrue(timeline[0]["decision"]["act"])
+        self.assertFalse(timeline[1]["decision"]["act"])
+        self.assertEqual(timeline[1]["decision"]["reason"], "duplicate_game_event")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,10 @@ class EmberDirector:
         self.opening_index = 0
         self.last_emotion_at = self.clock()
         self.last_decay_at = self.last_emotion_at
+        self.last_visual_reaction_at = 0.0
+        self.last_event_key = ""
+        self.last_event_at = 0.0
+        self.event_history = deque(maxlen=12)
         self.intent_history = deque(maxlen=8)
         self.curiosity_threads: list[CuriosityThread] = []
         self.active_curiosity: CuriosityThread | None = None
@@ -107,11 +111,29 @@ class EmberDirector:
 
     def decide(self, *, silence, change, game_event=None, quiet_trigger=False):
         self._decay()
+        now = self.clock()
         event = game_event or {}
         event_type = str(event.get("event_type") or "")
         priority = int(event.get("salience") or (9 if event.get("priority") == "critical" else 0))
         if event_type:
+            event_key = self._event_key(event_type, event)
+            repeat_window = float(self.config.get("director_event_repeat_seconds", 12))
+            if (
+                priority < 8 and event_key == self.last_event_key
+                and now - self.last_event_at < repeat_window
+            ):
+                return DirectorDecision(
+                    False, "hold_reaction", self.mood, "duplicate_game_event",
+                    self._event_performance(event_type, priority)[2],
+                    priority=priority, topic=str(event.get("title") or event_type),
+                )
             intent, tone, body = self._event_performance(event_type, priority)
+            self.last_event_key, self.last_event_at = event_key, now
+            self.event_history.append({
+                "event_type": event_type, "intent": intent, "tone": tone,
+                "at": now, "priority": priority,
+            })
+            self._absorb_event_emotion(tone, priority, now)
             decision = DirectorDecision(
                 True, intent, tone, f"game_event:{event_type}", body,
                 allow_media=event_type in {"zone_change", "activity_change", "boss_victory"},
@@ -122,14 +144,24 @@ class EmberDirector:
 
         threshold = float(self.config.get("screen_change_threshold", 5.0))
         if change >= threshold:
+            visual_gap = float(self.config.get("director_visual_reaction_gap_seconds", 20))
+            if self.last_visual_reaction_at and now - self.last_visual_reaction_at < visual_gap:
+                return DirectorDecision(
+                    False, "track_change", self.mood, "visual_reaction_cooldown",
+                    "attentive", priority=2, topic="continuing visual change",
+                )
+            self.last_visual_reaction_at = now
             return DirectorDecision(
                 True, "specific_observation", "curious", "meaningful_visual_change",
                 "curious", False, 4, "current visual change",
             )
 
         initiative_gap = float(self.config.get("director_minimum_initiative_gap_seconds", 120))
-        now = self.clock()
-        if quiet_trigger and now - self.last_initiative_at >= initiative_gap:
+        # Engaged conversations invite a slightly sooner follow-up; when Ember has
+        # repeatedly spoken without response, she gives the room more air.
+        cadence_factor = 1.3 - (0.55 * self.engagement)
+        effective_gap = initiative_gap * cadence_factor
+        if quiet_trigger and now - self.last_initiative_at >= effective_gap:
             curiosity = self._next_curiosity(now)
             if curiosity is not None:
                 intent = "follow_up_curiosity"
@@ -151,6 +183,8 @@ class EmberDirector:
             "engagement": round(self.engagement, 2),
             "last_intent": self.last_intent,
             "recent_intents": list(self.intent_history),
+            "energy": self._energy(),
+            "recent_events": list(self.event_history)[-4:],
             "open_curiosity_threads": [
                 asdict(thread) for thread in self.curiosity_threads if thread.status == "open"
             ],
@@ -170,11 +204,15 @@ class EmberDirector:
 
     def _next_curiosity(self, now):
         cooldown = float(self.config.get("director_curiosity_retry_seconds", 600))
-        return next((
+        candidates = [
             thread for thread in self.curiosity_threads
             if thread.status == "open" and thread.attempts < 2
             and (not thread.last_asked_at or now - thread.last_asked_at >= cooldown)
-        ), None)
+        ]
+        # Fresh scene questions beat old retried questions; a retry remains possible
+        # once nothing newer is waiting.
+        candidates.sort(key=lambda thread: (thread.attempts, -thread.created_at))
+        return candidates[0] if candidates else None
 
     def _decay(self):
         now = self.clock()
@@ -185,14 +223,41 @@ class EmberDirector:
         self.engagement = max(0.2, self.engagement - min(0.05, tick_age / 36000))
         self.last_decay_at = now
 
+    def _absorb_event_emotion(self, tone, priority, now):
+        self.mood = {
+            "excited": "excited", "concerned": "concerned", "tense": "focused",
+            "relieved": "relieved", "amused": "playful", "proud": "proud",
+        }.get(tone, self.mood)
+        self.engagement = min(1.0, self.engagement + (0.12 if priority >= 7 else 0.05))
+        self.last_emotion_at = now
+
+    def _energy(self):
+        if self.mood in {"excited", "playful", "proud"}: return "bright"
+        if self.mood in {"concerned", "focused"}: return "focused"
+        if self.engagement < 0.35: return "quiet"
+        return "settled"
+
+    @staticmethod
+    def _event_key(event_type, event):
+        identity = event.get("id") or event.get("title") or event.get("target") or ""
+        return f"{event_type}:{str(identity).strip().casefold()}"
+
     @staticmethod
     def _event_performance(event_type, priority):
         if event_type in {"player_death", "hardcore_player_death", "boss_wipe"}:
             return "support", "concerned", "worried"
         if event_type in {"critical_health", "boss_start"}:
             return "warn_or_rally", "tense", "concerned"
-        if event_type in {"boss_victory", "level_up", "valuable_loot", "quest_complete"}:
+        if event_type in {"boss_victory", "level_up", "quest_complete", "hard_fought_victory"}:
             return "celebrate", "excited", "excited"
+        if event_type in {"valuable_loot", "gear_upgrade"}:
+            return "admire", "proud", "proud"
+        if event_type in {"danger_recovered", "resurrection"}:
+            return "release_tension", "relieved", "relieved"
+        if event_type in {"player_mistake", "failed_pull"}:
+            return "gentle_tease", "amused", "mischievous"
+        if event_type in {"zone_change", "activity_change"}:
+            return "orient_and_notice", "curious", "curious"
         if priority >= 7:
             return "react", "attentive", "startled"
         return "observe", "curious", "curious"

@@ -6,6 +6,8 @@
   "director_minimum_initiative_gap_seconds": 120,
   "director_curiosity_retry_seconds": 600,
   "director_mood_decay_seconds": 600,
+  "director_event_repeat_seconds": 12,
+  "director_visual_reaction_gap_seconds": 20,
   "screen_change_threshold": 5.0,
   "monitor": 1,
   "speak_out_loud": true,
