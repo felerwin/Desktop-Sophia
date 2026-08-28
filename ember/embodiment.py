@@ -4,7 +4,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Callable
+from typing import Callable, Protocol
+
+
+class BodyAdapter(Protocol):
+    def submit(self, command: dict) -> None: ...
+
+
+class SpriteBodyAdapter:
+    """Keep Ember's semantic body commands independent of the sprite renderer."""
+
+    def __init__(self, overlay):
+        self.overlay = overlay
+
+    def submit(self, command: dict) -> None:
+        self.overlay.submit(command)
 
 
 class BodyState(str, Enum):
@@ -85,7 +99,7 @@ class ScreenTarget:
 
 
 class EmbodimentController:
-    def __init__(self, renderer: Callable[[dict], None] | None = None):
+    def __init__(self, renderer: Callable[[dict], None] | BodyAdapter | None = None):
         self.renderer = renderer
         self.state = BodyState.IDLE
         self.target: ScreenTarget | None = None
@@ -117,5 +131,7 @@ class EmbodimentController:
         self.set_state(BodyState.IDLE)
 
     def _emit(self, command: dict) -> None:
-        if self.renderer:
+        if hasattr(self.renderer, "submit"):
+            self.renderer.submit(command)
+        elif self.renderer:
             self.renderer(command)

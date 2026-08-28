@@ -34,6 +34,8 @@
   "router_reasoning_effort": "none",
   "mic_end_silence_seconds": 1.0,
   "mic_rms_threshold": 0.008,
+  "mic_vad_engine": "silero",
+  "mic_vad_threshold": 0.5,
   "transcription_language": "en",
   "mic_filter_ambient_speech": true,
   "mic_minimum_transcript_logprob": -0.7,

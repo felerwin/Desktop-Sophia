@@ -10,7 +10,8 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmberBrain, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, VisualObservation, WorldState, body_state_for_speech
+from ember import BodyState, EmberBrain, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, SpriteBodyAdapter, VisualObservation, WorldState, body_state_for_speech
+from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
 from game_events import GameEventEngine
 from memory_store import MemoryStore
@@ -657,6 +658,17 @@ class VoiceListener:
         self.sample_rate = int(CONFIG.get("mic_sample_rate", 16000))
         self.block_ms = int(CONFIG.get("mic_block_ms", 100))
         self.threshold = float(CONFIG.get("mic_rms_threshold", 0.018))
+        self.vad_threshold = float(CONFIG.get("mic_vad_threshold", 0.5))
+        self.vad = None
+        if str(CONFIG.get("mic_vad_engine", "silero")).casefold() == "silero":
+            try:
+                self.vad = SileroVoiceActivityDetector(
+                    ROOT / "ember" / "models" / "silero_vad.onnx", self.sample_rate
+                )
+                self.block_ms = 1000 * self.vad.FRAME_SAMPLES / self.sample_rate
+                log_event("MIC_VAD_READY", engine="silero", threshold=self.vad_threshold)
+            except Exception as exc:
+                log_event("MIC_VAD_FALLBACK", engine="rms", detail=str(exc))
         self.end_silence = float(CONFIG.get("mic_end_silence_seconds", 0.8))
         self.min_speech = float(CONFIG.get("mic_min_speech_seconds", 0.35))
         self.max_speech = float(CONFIG.get("mic_max_speech_seconds", 15.0))
@@ -838,6 +850,8 @@ class VoiceListener:
             recording = []
             speech_started = None
             last_loud = None
+            if self.vad is not None:
+                self.vad.reset()
 
             try:
                 device_label = self._device_label()
@@ -861,13 +875,21 @@ class VoiceListener:
                             recording = []
                             speech_started = None
                             last_loud = None
+                            if self.vad is not None:
+                                self.vad.reset()
                             continue
 
                         mono = data[:, 0].copy()
                         rms = float(np.sqrt(np.mean(np.square(mono)))) if len(mono) else 0.0
                         now = time.perf_counter()
+                        if self.vad is not None:
+                            voiced, speech_probability = self.vad.is_speech(
+                                mono, self.vad_threshold
+                            )
+                        else:
+                            voiced, speech_probability = rms >= self.threshold, None
 
-                        if rms >= self.threshold:
+                        if voiced:
                             if speech_started is None:
                                 speech_started = now
                                 recording = []
@@ -890,6 +912,14 @@ class VoiceListener:
                                         args=(audio, last_loud, time.perf_counter()),
                                         daemon=True,
                                     ).start()
+                                    log_event(
+                                        "MIC_UTTERANCE_DETECTED",
+                                        vad="silero" if self.vad is not None else "rms",
+                                        last_probability=(
+                                            round(speech_probability, 3)
+                                            if speech_probability is not None else None
+                                        ),
+                                    )
                                 recording = []
                                 speech_started = None
                                 last_loud = None
@@ -1650,7 +1680,7 @@ def main():
             )
             if not _ember_overlay.start():
                 raise RuntimeError(_ember_overlay.error or "overlay did not become ready")
-            _embodiment = EmbodimentController(_ember_overlay.submit)
+            _embodiment = EmbodimentController(SpriteBodyAdapter(_ember_overlay))
             set_body_state(BodyState.IDLE, "startup")
             log_event("EMBER_OVERLAY_READY")
         except Exception as exc:
