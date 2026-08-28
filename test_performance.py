@@ -19,6 +19,11 @@ class FakeTimer:
 
 
 class SpeechPerformanceTests(unittest.TestCase):
+    def test_performance_is_not_mistaken_for_worker_command(self):
+        performance = SpeechPerformance("Hello, Tony.")
+        command = performance.get("command") if isinstance(performance, dict) else None
+        self.assertIsNone(command)
+
     def test_expressive_line_reacts_then_talks_then_idles(self):
         states = []
         performance = SpeechPerformance("That is hilarious.")

@@ -399,9 +399,10 @@ class TTSWorker:
             if item is self._STOP:
                 break
 
-            if item.get("command") == "change_voice":
+            command = item.get("command") if isinstance(item, dict) else None
+            if command == "change_voice":
                 continue
-            if item.get("command") == "restart":
+            if command == "restart":
                 self._shutdown_worker()
                 self._proc = None
                 try:
@@ -412,7 +413,7 @@ class TTSWorker:
                     self._startup_error = str(exc)
                     log_event("TTS_ERROR", detail=str(exc))
                 continue
-            if item.get("command") == "change_output":
+            if command == "change_output":
                 self._shutdown_worker()
                 self._proc = None
                 try:
