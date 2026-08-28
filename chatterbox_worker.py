@@ -11,7 +11,7 @@ import numpy as np
 import sounddevice as sd
 import torch
 from chatterbox.tts_turbo import ChatterboxTurboTTS
-from scipy.signal import resample_poly
+from ember.audio_output import prepare_playback_audio
 
 
 def emit(kind, **fields):
@@ -116,9 +116,7 @@ def main():
                 emit("ERROR", detail="Chatterbox generated no audio.")
                 continue
 
-            audio = np.asarray(audio, dtype=np.float32)
-            if output_rate != model.sr:
-                audio = resample_poly(audio, output_rate, model.sr).astype(np.float32)
+            audio = prepare_playback_audio(audio, model.sr, output_rate)
             cancelled = False
             while not commands.empty():
                 pending = commands.get_nowait()
