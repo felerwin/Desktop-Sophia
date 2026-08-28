@@ -14,6 +14,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.parse import unquote
 
+from ember.runtime import AtomicJsonStore
+from ember.replay import ReplaySignal, replay_signals
+
 
 VOICE_OPTIONS = [
     {"name": "Chatterbox Turbo", "voice": "chatterbox-turbo", "language": "en"},
@@ -24,6 +27,7 @@ class DashboardHub:
         self.root = Path(root)
         self.youtube_library_path = self.root / "youtube_library.json"
         self.config = config
+        self.config_store = AtomicJsonStore(self.root / "config.json", dict)
         self.shutdown_event = shutdown_event
         self.started_at = time.time()
         self.lock = threading.Lock()
@@ -47,6 +51,7 @@ class DashboardHub:
         self.budget_state_provider = None
         self.budget_resume_handler = None
         self.body_test_handler = None
+        self.director_state_provider = None
         self.microphone_options = []
         self.audio_output_options = []
         self.state = {
@@ -69,6 +74,9 @@ class DashboardHub:
             self.state["phase"] = phase
             self.state["phase_label"] = label or phase.replace("_", " ").title()
 
+    def _save_config(self):
+        self.config_store.save(self.config)
+
     def set_context_services(self, memory_store=None, game_events=None):
         self.memory_store = memory_store
         self.game_events = game_events
@@ -79,6 +87,25 @@ class DashboardHub:
 
     def set_body_test_handler(self, handler):
         self.body_test_handler = handler
+
+    def set_director_provider(self, provider):
+        self.director_state_provider = provider
+
+    def simulate_director(self, payload):
+        """Run a synthetic Director decision without touching live companion state."""
+        event_type = str(payload.get("event_type") or "").strip()[:60]
+        signal = ReplaySignal(
+            at=time.time(),
+            silence=max(0.0, float(payload.get("silence") or 0)),
+            change=max(0.0, float(payload.get("change") or 0)),
+            quiet_trigger=bool(payload.get("quiet_trigger")),
+            game_event=(
+                {"event_type": event_type, "salience": int(payload.get("salience") or 5)}
+                if event_type else {}
+            ),
+            curiosity=str(payload.get("curiosity") or "")[:180],
+        )
+        return replay_signals([signal], self.config)[0]
 
     def resume_budget(self):
         if self.budget_resume_handler is None:
@@ -192,6 +219,10 @@ class DashboardHub:
                     ),
                     "sessions": self.memory_store.list_sessions(12) if self.memory_store else [],
                 },
+                "director": (
+                    self.director_state_provider()
+                    if self.director_state_provider else {}
+                ),
                 "game_events": (
                     self.game_events.snapshot() if self.game_events else {
                         "status": "disabled", "log_path": None, "recent": []
@@ -761,10 +792,7 @@ class DashboardHub:
             self.config["wow_character_class"] = str(character_class or "").strip()[:40]
             mode = str(game_mode or "Standard").strip().title()
             self.config["wow_game_mode"] = mode if mode in {"Standard", "Hardcore"} else "Standard"
-            config_path = self.root / "config.json"
-            tmp_path = config_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
-            os.replace(tmp_path, config_path)
+            self._save_config()
         if self.game_events is not None:
             self.game_events.log_path = None
         return {
@@ -847,10 +875,7 @@ class DashboardHub:
             self.config["mic_device"] = device_index
             self.state["phase"] = "reconnecting"
             self.state["phase_label"] = "Switching microphones…"
-            config_path = self.root / "config.json"
-            tmp_path = config_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
-            os.replace(tmp_path, config_path)
+            self._save_config()
         if self.microphone_change_handler is not None:
             self.microphone_change_handler(device_index)
         return match
@@ -872,10 +897,7 @@ class DashboardHub:
             self.config["tts_output_hostapi"] = match["hostapi"]
             self.state["phase"] = "warming"
             self.state["phase_label"] = "Switching speakers…"
-            config_path = self.root / "config.json"
-            tmp_path = config_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
-            os.replace(tmp_path, config_path)
+            self._save_config()
         if self.audio_output_change_handler is not None:
             self.audio_output_change_handler(match["name"], match["hostapi"])
         return match
@@ -886,10 +908,7 @@ class DashboardHub:
             raise ValueError("Unknown voice.")
         with self.lock:
             self.config["tts_voice"] = match["voice"]
-            config_path = self.root / "config.json"
-            tmp_path = config_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
-            os.replace(tmp_path, config_path)
+            self._save_config()
         if self.voice_change_handler is not None:
             self.voice_change_handler(match["voice"], match["language"], match["name"])
         return match
@@ -907,10 +926,7 @@ class DashboardHub:
             raise ValueError("Unknown dashboard control.")
         with self.lock:
             self.config[name] = bool(value)
-            config_path = self.root / "config.json"
-            tmp_path = config_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
-            os.replace(tmp_path, config_path)
+            self._save_config()
 
     def start(self, port=8766, open_browser=False):
         hub = self
@@ -1022,6 +1038,8 @@ class DashboardHub:
                     elif path == "/api/body/test":
                         sequence = hub.test_body(payload.get("preset"))
                         self._json({"ok": True, "sequence": sequence})
+                    elif path == "/api/director/simulate":
+                        self._json({"ok": True, "result": hub.simulate_director(payload)})
                     elif path == "/api/game/config":
                         settings = hub.update_game_config(
                             payload.get("log_path"), payload.get("player_name"),

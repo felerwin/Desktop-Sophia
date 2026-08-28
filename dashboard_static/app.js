@@ -241,6 +241,10 @@ function render(state) {
   $("hearingText").textContent = state.phase === "listening" ? "Listening for Tony…" : state.phase_label;
   $("diagnosticState").textContent = "Connected";
   $("diagnosticLog").textContent = state.logs.slice(0, 12).map((row) => `[${row.event}] ${row.text}`).join("\n") || "All systems quiet.";
+  const director = state.director || {};
+  $("directorState").textContent = director.last_intent
+    ? `${director.mood} · ${director.last_intent} · engagement ${director.engagement}`
+    : "Director state unavailable";
   document.querySelectorAll("[data-control]").forEach((input) => {
     input.checked = Boolean(state.controls[input.dataset.control]);
   });
@@ -435,6 +439,24 @@ document.querySelectorAll("[data-body-test]").forEach((button) => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ preset: button.dataset.bodyTest }),
     });
+  });
+});
+
+document.querySelectorAll("[data-director-test]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const presets = {
+      quiet: { silence: 200, quiet_trigger: true, curiosity: "the unfinished puzzle" },
+      change: { silence: 90, change: 8 },
+      boss: { event_type: "boss_start", salience: 9 },
+    };
+    const response = await fetch(`${apiBase}/api/director/simulate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(presets[button.dataset.directorTest]),
+    });
+    const payload = await response.json();
+    const result = payload.result || {};
+    const decision = result.decision || {};
+    $("directorState").textContent = `${decision.intent || "observe"} · ${decision.tone || "warm"} · ${decision.reason || "offline simulation"}`;
   });
 });
 

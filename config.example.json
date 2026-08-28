@@ -4,6 +4,8 @@
   "minimum_comment_gap_seconds": 45,
   "quiet_time_soft_trigger_seconds": 90,
   "director_minimum_initiative_gap_seconds": 120,
+  "director_curiosity_retry_seconds": 600,
+  "director_mood_decay_seconds": 600,
   "screen_change_threshold": 5.0,
   "monitor": 1,
   "speak_out_loud": true,

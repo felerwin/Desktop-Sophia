@@ -3,7 +3,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -255,6 +255,43 @@ class MemoryStore:
             self.connection.commit()
         if not cursor.rowcount:
             raise ValueError("Memory not found.")
+
+    def maintenance_candidates(self, stale_days=90, importance_below=0.35, limit=100):
+        """Return low-value stale memories eligible for archival; never select pins."""
+        stale_days = max(1, int(stale_days))
+        importance_below = max(0.0, min(1.0, float(importance_below)))
+        limit = max(1, min(int(limit), 500))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=stale_days)).isoformat(
+            timespec="seconds"
+        )
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM memories
+                WHERE archived=0 AND pinned=0 AND importance < ?
+                  AND recall_count=0 AND updated_at < ?
+                ORDER BY importance ASC, updated_at ASC LIMIT ?
+                """,
+                (importance_below, cutoff, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def maintain(self, stale_days=90, importance_below=0.35, apply=False):
+        """Preview or archive deterministic stale candidates without model rewriting."""
+        candidates = self.maintenance_candidates(stale_days, importance_below)
+        if apply and candidates:
+            timestamp = _now()
+            with self.lock:
+                self.connection.executemany(
+                    "UPDATE memories SET archived=1, updated_at=? WHERE id=? AND pinned=0",
+                    [(timestamp, row["id"]) for row in candidates],
+                )
+                self.connection.commit()
+        return {
+            "applied": bool(apply),
+            "count": len(candidates),
+            "ids": [row["id"] for row in candidates],
+        }
 
     def list_memories(self, limit=80, category=None):
         limit = max(1, min(int(limit), 200))

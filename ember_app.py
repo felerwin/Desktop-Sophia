@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import BodyState, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, SpriteBodyAdapter, VisualObservation, WorldState, body_state_for_speech
+from ember import AtomicJsonStore, BodyState, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, SpriteBodyAdapter, StreamedSpeechParser, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, parse_model_action, plan_performance
 from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
 from ember.tts_protocol import should_log_worker_stderr, worker_command
@@ -31,6 +31,8 @@ COMPANION_USER_NAME = str(CONFIG.get("companion_user_name", "Tony") or "Tony").s
 MEMORY_PATH = ROOT / "memory.json"
 SESSION_LOG_PATH = ROOT / "session_log.jsonl"
 CONFIG_PATH = ROOT / "config.json"
+_memory_json = AtomicJsonStore(MEMORY_PATH, default_companion_memory)
+_config_json = AtomicJsonStore(CONFIG_PATH, dict)
 
 
 def configured_python(value, fallback):
@@ -135,12 +137,6 @@ preamble, extra lines, markdown, or combined actions.
 """
 SYSTEM = SYSTEM.replace("Tony", COMPANION_USER_NAME)
 
-# Matches the allowed response actions (case-insensitive), allowing the message
-# body to contain its own colons/newlines. Anything that doesn't match this
-# shape is treated as malformed output rather than guessed at.
-OUTPUT_LINE_RE = re.compile(r"^\s*(SAY|SILENT|VIDEO|POINT)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
-
-
 def parse_point_action(content):
     payload = json.loads(content)
     if not isinstance(payload, dict):
@@ -233,39 +229,21 @@ def log_event(event_name, **fields):
 # ---------------------------------------------------------------------------
 
 def load_memory():
-    try:
-        return json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {"recent_observations": [], "recent_utterances": []}
-    except Exception as exc:
-        backup = MEMORY_PATH.with_suffix(".json.bak")
+    def report(exc):
         log_event("MEMORY_READ_ERROR", detail=str(exc), preserved=str(MEMORY_PATH))
-        try:
-            recovered = json.loads(backup.read_text(encoding="utf-8"))
-            log_event("MEMORY_RECOVERED", source=str(backup))
-            return recovered
-        except Exception:
-            return {"recent_observations": [], "recent_utterances": []}
+    memory = _memory_json.load(on_error=report)
+    if _memory_json.backup_path.is_file() and not MEMORY_PATH.is_file():
+        log_event("MEMORY_RECOVERED", source=str(_memory_json.backup_path))
+    return memory
 
 
 def save_memory(mem):
-    tmp_path = MEMORY_PATH.with_suffix(".tmp")
-    backup = MEMORY_PATH.with_suffix(".json.bak")
-    if MEMORY_PATH.is_file():
-        try:
-            json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
-            shutil.copy2(MEMORY_PATH, backup)
-        except Exception:
-            pass
-    tmp_path.write_text(json.dumps(mem, indent=2), encoding="utf-8")
-    os.replace(tmp_path, MEMORY_PATH)  # atomic on both Windows and POSIX
+    _memory_json.save(mem)
 
 
 def save_config():
     """Persist shared dashboard/device settings atomically."""
-    tmp_path = CONFIG_PATH.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(CONFIG, indent=2), encoding="utf-8")
-    os.replace(tmp_path, CONFIG_PATH)
+    _config_json.save(CONFIG)
 
 
 def memory_database_path():
@@ -1116,6 +1094,13 @@ def apply_scene_context(scene, mem, stamp):
     note = scene_memory_note(scene)
     if note:
         mem["recent_observations"].append({"time": stamp, "note": note, "source": "vision"})
+    change = " ".join(str(scene.get("change") or "").split())
+    if (
+        _director is not None and change
+        and float(scene.get("confidence") or 0.0) >= 0.6
+        and change.casefold() not in {"none", "no change", "nothing meaningful"}
+    ):
+        _director.add_curiosity(change, "visual_change")
     log_event("VISUAL_CONTEXT_UPDATED", **scene)
 
 
@@ -1384,58 +1369,6 @@ def call_model(
     return None, ("RATE_LIMITED", "max retries exceeded"), None
 
 
-class StreamedSpeechParser:
-    """Validate the output prefix, then release complete spoken phrases."""
-
-    def __init__(self, on_phrase):
-        self.on_phrase = on_phrase
-        self.raw = ""
-        self.kind = None
-        self.buffer = ""
-        self.phrase_index = 0
-
-    def feed(self, delta):
-        self.raw += delta
-        if self.kind is None:
-            match = re.match(r"^\s*(SAY|SILENT|VIDEO|POINT)\s*:\s*", self.raw, re.IGNORECASE)
-            if not match:
-                return
-            self.kind = match.group(1).upper()
-            if self.kind == "SAY":
-                self.buffer = self.raw[match.end():]
-        elif self.kind == "SAY":
-            self.buffer += delta
-
-        if self.kind == "SAY":
-            self._release_ready_phrases()
-
-    def _release_ready_phrases(self):
-        while self.buffer:
-            boundary = None
-            for match in re.finditer(r"[.!?][\"'”’]?|[,;:—]", self.buffer):
-                candidate = self.buffer[:match.end()].strip()
-                strong = match.group(0)[0] in ".!?"
-                if (strong and len(candidate) >= 12) or len(candidate) >= 45:
-                    boundary = match.end()
-                    break
-            if boundary is None:
-                return
-            self._emit(self.buffer[:boundary])
-            self.buffer = self.buffer[boundary:].lstrip()
-
-    def finish(self):
-        if self.kind == "SAY" and self.buffer.strip():
-            self._emit(self.buffer)
-            self.buffer = ""
-
-    def _emit(self, text):
-        text = text.strip()
-        if not text:
-            return
-        self.phrase_index += 1
-        self.on_phrase(text, self.phrase_index)
-
-
 def call_model_streaming(
     client, model, prompt, img, timeout_seconds, on_phrase,
     reasoning_effort="low",
@@ -1688,8 +1621,8 @@ when you can locate it and put your spoken reply in POINT's say field.
         set_body_state(BodyState.IDLE, "response_error")
         return
 
-    match = OUTPUT_LINE_RE.match(raw_out.strip()) if raw_out else None
-    if not match:
+    action = parse_model_action(raw_out)
+    if action is None:
         update_usage_outcome(
             usage_event_id, "malformed_output", (raw_out or "")[:300]
         )
@@ -1698,8 +1631,8 @@ when you can locate it and put your spoken reply in POINT's say field.
         set_body_state(BodyState.IDLE, "malformed_response")
         return
 
-    kind = match.group(1).upper()
-    content = match.group(2).strip()
+    kind = action.kind
+    content = action.content
     update_usage_outcome(usage_event_id, f"parsed_{kind.lower()}")
     stamp = datetime.now().isoformat(timespec="seconds")
 
@@ -1848,6 +1781,7 @@ def main():
     _dashboard.set_context_services(_memory_store, _game_events)
     _dashboard.set_budget_handlers(budget_state, resume_autonomy_budget)
     _dashboard.set_body_test_handler(test_body_sequence)
+    _dashboard.set_director_provider(_director.context)
     import_existing_memory_history()
     try:
         _dashboard.start(
@@ -2009,6 +1943,7 @@ def main():
                 game_event=game_event,
                 quiet_trigger=bool(gap_ok and quiet_trigger),
             )
+            performance = plan_performance(direction)
             triggered = bool(direction.act and (bool(game_event) or gap_ok))
 
             if not triggered:
@@ -2037,7 +1972,10 @@ def main():
             available_youtube = _dashboard.youtube_context(spontaneous=True)
             tool_after = max(2, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 4)))
             active_brain_plan = _brain.current_plan if _brain is not None and game_event else None
-            critical_interrupt = bool(active_brain_plan and active_brain_plan.priority >= 9)
+            critical_interrupt = bool(
+                performance.interrupt
+                or (active_brain_plan and active_brain_plan.priority >= 9)
+            )
             event_type = game_event.get("event_type") if game_event else None
             talk_first_events = {
                 "boss_start", "boss_wipe", "player_death", "hardcore_player_death",
@@ -2112,6 +2050,9 @@ Reaction policy for this decision:
 Ember Director performance intent:
 {json.dumps(direction.__dict__, ensure_ascii=False)}
 
+Bounded voice/body/media performance contract:
+{json.dumps(performance.prompt_context(), ensure_ascii=False)}
+
 Persistent Director state:
 {director_context()}
 
@@ -2173,9 +2114,9 @@ waiting for Tony to ask.
             stamp = datetime.now().isoformat(timespec="seconds")
             scene, action_out = parse_scene_envelope(raw_out)
             apply_scene_context(scene, mem, stamp)
-            match = OUTPUT_LINE_RE.match(action_out) if action_out else None
+            action = parse_model_action(action_out)
 
-            if not match:
+            if action is None:
                 update_usage_outcome(
                     usage_event_id, "malformed_output", (raw_out or "")[:300]
                 )
@@ -2188,8 +2129,8 @@ waiting for Tony to ask.
                 )
                 continue
 
-            kind = match.group(1).upper()
-            content = match.group(2).strip()
+            kind = action.kind
+            content = action.content
             update_usage_outcome(usage_event_id, f"parsed_{kind.lower()}")
             autonomous_tool_used = False
 
@@ -2207,15 +2148,13 @@ waiting for Tony to ask.
             if kind == "SAY" and (gap_ok or critical_interrupt):
                 content = normalize_spoken_text(content)
                 print(f"Ember: {content}")
-                tts_worker.say(content)
+                tts_worker.say(content, body_state=performance.body_state)
                 last_spoken = now
                 _last_companion_action_at = now
                 mem["recent_utterances"].append({"time": stamp, "text": content})
                 record_memory_turn("Ember", content)
                 if _brain is not None:
                     _brain.record_response(content)
-                if _director is not None:
-                    _director.observe_response(direction.intent)
                 log_event("SAY", text=content, api_call_count=_api_call_count)
             elif kind == "POINT" and content:
                 try:
@@ -2283,7 +2222,8 @@ waiting for Tony to ask.
                 api_call_count=_api_call_count,
             )
             if _director is not None:
-                _director.observe_response(direction.intent)
+                spoke = kind == "SAY" or (kind == "POINT" and bool(content))
+                _director.record_outcome(intent=direction.intent, spoke=spoke)
 
             mem["recent_observations"] = mem["recent_observations"][-30:]
             mem["recent_utterances"] = mem["recent_utterances"][-30:]

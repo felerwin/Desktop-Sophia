@@ -35,6 +35,39 @@ class EmberDirectorTests(unittest.TestCase):
         self.assertTrue(decision.act)
         self.assertEqual(decision.intent, "specific_observation")
 
+    def test_open_curiosity_becomes_next_initiative_and_then_resolves(self):
+        now = [1000.0]
+        director = EmberDirector(clock=lambda: now[0])
+        director.add_curiosity("whether the dispatch puzzle was resolved", "scene")
+        decision = director.decide(silence=200, change=0, quiet_trigger=True)
+        self.assertEqual(decision.intent, "follow_up_curiosity")
+        self.assertIn("dispatch", decision.topic)
+        director.record_outcome(intent=decision.intent, spoke=True)
+        director.observe_speech("Yeah, we resolved it.")
+        self.assertEqual(director.context()["open_curiosity_threads"], [])
+
+    def test_unanswered_curiosity_retires_after_two_attempts(self):
+        now = [1000.0]
+        director = EmberDirector(
+            {"director_curiosity_retry_seconds": 10}, clock=lambda: now[0]
+        )
+        director.add_curiosity("the mysterious door")
+        first = director.decide(silence=200, change=0, quiet_trigger=True)
+        director.record_outcome(intent=first.intent, spoke=True)
+        now[0] += 130
+        second = director.decide(silence=330, change=0, quiet_trigger=True)
+        director.record_outcome(intent=second.intent, spoke=True)
+        self.assertEqual(director.context()["open_curiosity_threads"], [])
+
+    def test_mood_decays_back_to_warm(self):
+        now = [1000.0]
+        director = EmberDirector({"director_mood_decay_seconds": 60}, clock=lambda: now[0])
+        director.observe_speech("This is ridiculous", "frustrated")
+        self.assertEqual(director.mood, "concerned")
+        now[0] += 61
+        director.decide(silence=0, change=0)
+        self.assertEqual(director.mood, "warm")
+
 
 if __name__ == "__main__":
     unittest.main()

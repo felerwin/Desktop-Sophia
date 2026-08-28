@@ -1,6 +1,7 @@
 """Deterministic attention and performance direction for Ember."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict, dataclass
 import time
 
@@ -14,6 +15,17 @@ class DirectorDecision:
     body_hint: str = "idle"
     allow_media: bool = False
     priority: int = 0
+    topic: str = ""
+
+
+@dataclass
+class CuriosityThread:
+    topic: str
+    source: str
+    created_at: float
+    last_asked_at: float = 0.0
+    attempts: int = 0
+    status: str = "open"
 
 
 class EmberDirector:
@@ -34,22 +46,60 @@ class EmberDirector:
         self.last_initiative_at = 0.0
         self.last_intent = "listen"
         self.opening_index = 0
+        self.last_emotion_at = self.clock()
+        self.last_decay_at = self.last_emotion_at
+        self.intent_history = deque(maxlen=8)
+        self.curiosity_threads: list[CuriosityThread] = []
+        self.active_curiosity: CuriosityThread | None = None
 
     def observe_speech(self, text, tone="neutral"):
-        self.last_direct_speech_at = self.clock()
+        now = self.clock()
+        self.last_direct_speech_at = now
         self.engagement = min(1.0, self.engagement + 0.18)
         self.mood = {
             "frustrated": "concerned",
             "surprised": "excited",
         }.get(str(tone), "warm")
+        self.last_emotion_at = now
         self.last_intent = "respond"
+        if self.active_curiosity is not None:
+            self.active_curiosity.status = "answered"
+            self.active_curiosity = None
 
     def observe_response(self, intent="respond"):
         self.last_intent = str(intent)
+        self.intent_history.append(str(intent))
         if intent != "respond":
             self.last_initiative_at = self.clock()
 
+    def add_curiosity(self, topic, source="scene"):
+        normalized = " ".join(str(topic or "").split())[:180]
+        if not normalized:
+            return None
+        for thread in self.curiosity_threads:
+            if thread.status == "open" and thread.topic.casefold() == normalized.casefold():
+                return thread
+        thread = CuriosityThread(normalized, str(source), self.clock())
+        self.curiosity_threads.append(thread)
+        self.curiosity_threads = self.curiosity_threads[-8:]
+        return thread
+
+    def record_outcome(self, *, intent, spoke, user_responded=False):
+        """Feed performance results back into cadence without model interpretation."""
+        self.observe_response(intent)
+        if user_responded:
+            self.engagement = min(1.0, self.engagement + 0.12)
+        elif spoke and intent != "respond":
+            self.engagement = max(0.15, self.engagement - 0.05)
+        if self.active_curiosity is not None and spoke:
+            self.active_curiosity.last_asked_at = self.clock()
+            self.active_curiosity.attempts += 1
+            if self.active_curiosity.attempts >= 2:
+                self.active_curiosity.status = "retired"
+                self.active_curiosity = None
+
     def decide(self, *, silence, change, game_event=None, quiet_trigger=False):
+        self._decay()
         event = game_event or {}
         event_type = str(event.get("event_type") or "")
         priority = int(event.get("salience") or (9 if event.get("priority") == "critical" else 0))
@@ -58,7 +108,7 @@ class EmberDirector:
             decision = DirectorDecision(
                 True, intent, tone, f"game_event:{event_type}", body,
                 allow_media=event_type in {"zone_change", "activity_change", "boss_victory"},
-                priority=max(priority, 5),
+                priority=max(priority, 5), topic=str(event.get("title") or event_type),
             )
             self.last_intent = intent
             return decision
@@ -67,16 +117,24 @@ class EmberDirector:
         if change >= threshold:
             return DirectorDecision(
                 True, "specific_observation", "curious", "meaningful_visual_change",
-                "curious", False, 4,
+                "curious", False, 4, "current visual change",
             )
 
         initiative_gap = float(self.config.get("director_minimum_initiative_gap_seconds", 120))
         now = self.clock()
         if quiet_trigger and now - self.last_initiative_at >= initiative_gap:
-            intent = self.OPENINGS[self.opening_index % len(self.OPENINGS)]
-            self.opening_index += 1
+            curiosity = self._next_curiosity(now)
+            if curiosity is not None:
+                intent = "follow_up_curiosity"
+                topic = curiosity.topic
+                reason = "open_curiosity_thread"
+                self.active_curiosity = curiosity
+            else:
+                intent = self._next_opening()
+                topic = "shared current context"
+                reason = "quiet_time_opening"
             return DirectorDecision(
-                True, intent, self.mood, "quiet_time_opening", "curious", False, 3,
+                True, intent, self.mood, reason, "curious", False, 3, topic,
             )
         return DirectorDecision(False, "observe", self.mood, "nothing_salient")
 
@@ -85,11 +143,40 @@ class EmberDirector:
             "mood": self.mood,
             "engagement": round(self.engagement, 2),
             "last_intent": self.last_intent,
+            "recent_intents": list(self.intent_history),
+            "open_curiosity_threads": [
+                asdict(thread) for thread in self.curiosity_threads if thread.status == "open"
+            ],
             "direction": (
                 "Choose words that serve the Director intent. Body and voice should "
                 "support the same emotional beat; do not narrate the intent."
             ),
         }
+
+    def _next_opening(self):
+        for _ in self.OPENINGS:
+            intent = self.OPENINGS[self.opening_index % len(self.OPENINGS)]
+            self.opening_index += 1
+            if intent not in list(self.intent_history)[-2:]:
+                return intent
+        return "playful_check_in"
+
+    def _next_curiosity(self, now):
+        cooldown = float(self.config.get("director_curiosity_retry_seconds", 600))
+        return next((
+            thread for thread in self.curiosity_threads
+            if thread.status == "open" and thread.attempts < 2
+            and (not thread.last_asked_at or now - thread.last_asked_at >= cooldown)
+        ), None)
+
+    def _decay(self):
+        now = self.clock()
+        emotion_age = max(0.0, now - self.last_emotion_at)
+        tick_age = max(0.0, now - self.last_decay_at)
+        if emotion_age >= float(self.config.get("director_mood_decay_seconds", 600)):
+            self.mood = "warm"
+        self.engagement = max(0.2, self.engagement - min(0.05, tick_age / 36000))
+        self.last_decay_at = now
 
     @staticmethod
     def _event_performance(event_type, priority):
@@ -102,4 +189,3 @@ class EmberDirector:
         if priority >= 7:
             return "react", "attentive", "startled"
         return "observe", "curious", "curious"
-
