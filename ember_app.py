@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import AtomicJsonStore, AutonomyCadence, BodyState, ChatterboxProcess, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, UtteranceSegmenter, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, normalize_local_transcription, normalize_provider_transcription, parse_model_action, plan_performance, response_content, wait_for_transcript
+from ember import AtomicJsonStore, AutonomyCadence, BodyState, ChatterboxProcess, EmberBrain, EmberDirector, EmberSpeechService, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, UtteranceSegmenter, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, normalize_local_transcription, normalize_provider_transcription, parse_model_action, plan_performance, response_content, wait_for_transcript
 from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
 from ember.tts_protocol import worker_command
@@ -306,7 +306,7 @@ def image_data_url(img):
 # per utterance. Also the only place that can produce TTS_ERROR.
 # ---------------------------------------------------------------------------
 
-class TTSWorker:
+class LegacyTTSWorker:
     def __init__(self):
         self._queue = SpeechQueue()
         self.engine = "chatterbox"
@@ -1662,7 +1662,12 @@ def main():
 
     request_timeout = float(CONFIG.get("api_timeout_seconds", 20))
     vision_rate_cap = RateCap(int(CONFIG.get("max_vision_calls_per_minute", 6)))
-    tts_worker = TTSWorker()
+    tts_worker = EmberSpeechService(
+        ROOT, CONFIG, log_event, set_body_state, _tts_speaking,
+        set_phase=lambda phase, label=None: (
+            _dashboard.set_phase(phase, label) if _dashboard is not None else None
+        ),
+    )
     _tts_worker = tts_worker
     _dashboard.set_voice_change_handler(tts_worker.change_voice)
     _dashboard.set_audio_output_controls(
