@@ -1,4 +1,4 @@
-import os, json, time, base64, io, re, threading, queue, wave, tempfile, subprocess, urllib.request
+import os, json, time, base64, io, re, threading, wave, tempfile, subprocess, urllib.request
 import shutil
 from pathlib import Path
 from datetime import datetime
@@ -10,10 +10,10 @@ import numpy as np
 import sounddevice as sd
 from openai import OpenAI, APITimeoutError, RateLimitError, APIError
 from dashboard_server import DashboardHub
-from ember import AtomicJsonStore, BodyState, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, ScreenTarget, SpeechPerformance, SpriteBodyAdapter, StreamedSpeechParser, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, parse_model_action, plan_performance
+from ember import AtomicJsonStore, AutonomyCadence, BodyState, EmberBrain, EmberDirector, EmbodimentController, EmberOverlay, RateCap, RetrySchedule, ScreenTarget, SpeechPerformance, SpeechQueue, SpriteBodyAdapter, StreamedSpeechParser, TranscriptInbox, VisualObservation, WorldState, body_state_for_speech, default_companion_memory, parse_model_action, plan_performance, response_content, wait_for_transcript
 from ember.vad import SileroVoiceActivityDetector
 from ember.telemetry import WowTelemetryAdapter
-from ember.tts_protocol import should_log_worker_stderr, worker_command
+from ember.tts_protocol import parse_worker_event, should_log_worker_stderr, worker_command
 from game_events import GameEventEngine
 from memory_store import MemoryStore
 from model_routing import hybrid_route
@@ -300,10 +300,8 @@ def image_data_url(img):
 # ---------------------------------------------------------------------------
 
 class TTSWorker:
-    _STOP = object()
-
     def __init__(self):
-        self._queue = queue.Queue()
+        self._queue = SpeechQueue()
         self.engine = "chatterbox"
         self.python = configured_python(
             CONFIG.get("chatterbox_python"), ROOT / ".chatterbox_venv" / "Scripts" / "python.exe"
@@ -341,12 +339,11 @@ class TTSWorker:
             line = line.strip()
             if not line:
                 continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
+            msg = parse_worker_event(line)
+            if msg is None:
                 log_event("TTS_WORKER_OUTPUT", text=line[:300])
                 continue
-            if isinstance(msg, dict) and msg.get("event") in wanted:
+            if msg.get("event") in wanted:
                 return msg
             log_event("TTS_WORKER_OUTPUT", text=line[:300])
         raise RuntimeError("Chatterbox worker stopped before expected event.")
@@ -426,7 +423,7 @@ class TTSWorker:
 
         while True:
             item = self._queue.get()
-            if item is self._STOP:
+            if item is self._queue.STOP:
                 break
 
             command = item.get("command") if isinstance(item, dict) else None
@@ -568,18 +565,10 @@ class TTSWorker:
 
     def interrupt(self, reason="higher_priority_event"):
         """Stop the active line and discard stale queued lines."""
-        discarded = 0
-        while True:
-            try:
-                pending = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            if isinstance(pending, SpeechPerformance):
-                pending.finish(set_body_state, return_to_idle=False)
-                discarded += 1
-            elif pending is self._STOP:
-                self._queue.put(self._STOP)
-                break
+        pending_performances = self._queue.drain_performances()
+        for pending in pending_performances:
+            pending.finish(set_body_state, return_to_idle=False)
+        discarded = len(pending_performances)
         proc = self._proc
         if proc is not None and proc.poll() is None and _tts_speaking.is_set():
             try:
@@ -597,7 +586,7 @@ class TTSWorker:
         return self._startup_error
 
     def stop(self):
-        self._queue.put(self._STOP)
+        self._queue.stop()
         self._thread.join(timeout=7)
         if self._thread.is_alive():
             self._shutdown_worker()
@@ -688,7 +677,7 @@ class VoiceListener:
         self.client = client
         self.transcription_provider = os.getenv("EMBER_TRANSCRIPTION_PROVIDER", "openai").casefold()
         self.local_transcriber = None
-        self.transcripts = queue.Queue()
+        self.transcripts = TranscriptInbox()
         self.stop_event = threading.Event()
         self.reconnect_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -1000,23 +989,12 @@ class VoiceListener:
 
 
 def pop_transcript(listener):
-    try:
-        return listener.transcripts.get_nowait()
-    except queue.Empty:
-        return None
+    return listener.transcripts.pop()
 
 
 def interruptible_sleep(seconds, listener):
     """Sleep in short slices so spoken input can wake the main loop quickly."""
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        if _shutdown_requested.is_set():
-            return None
-        text = pop_transcript(listener)
-        if text:
-            return text
-        time.sleep(min(0.15, max(0.0, deadline - time.time())))
-    return pop_transcript(listener)
+    return wait_for_transcript(seconds, listener.transcripts, _shutdown_requested)
 
 
 def wait_and_handle_speech(seconds, listener, client, route, timeout, tts_worker, mem):
@@ -1034,20 +1012,6 @@ def wait_and_handle_speech(seconds, listener, client, route, timeout, tts_worker
 # ---------------------------------------------------------------------------
 # Self-imposed vision call cap, independent of provider-side rate limiting.
 # ---------------------------------------------------------------------------
-
-class RateCap:
-    def __init__(self, max_per_minute):
-        self.max_per_minute = max_per_minute
-        self._timestamps = []
-
-    def allow(self):
-        now = time.time()
-        self._timestamps = [t for t in self._timestamps if now - t < 60]
-        if len(self._timestamps) >= self.max_per_minute:
-            return False
-        self._timestamps.append(now)
-        return True
-
 
 def compact_context(mem):
     return json.dumps({
@@ -1323,21 +1287,15 @@ def call_model(
 ):
     """Returns (raw_text, error, usage_event_id). Usage is persisted before parsing."""
     global _api_call_count
-    backoff = 2.0
+    retry = RetrySchedule(max_retries=max_retries, initial_seconds=2.0)
     for attempt in range(max_retries + 1):
         _api_call_count += 1
         try:
-            content = [{"type": "input_text", "text": prompt}]
-            if img is not None:
-                content.append({"type": "input_image", "image_url": image_data_url(img)})
             response = client.with_options(timeout=timeout_seconds).responses.create(
                 model=model,
                 instructions=SYSTEM,
                 reasoning={"effort": reasoning_effort},
-                input=[{
-                    "role": "user",
-                    "content": content,
-                }],
+                input=response_content(prompt, image_data_url(img) if img is not None else None),
             )
             usage_event_id = log_api_usage(response, model, call_type)
             return response.output_text, None, usage_event_id
@@ -1348,10 +1306,10 @@ def call_model(
             update_usage_outcome(event_id, "timeout", str(e))
             return None, ("TIMEOUT", str(e)), event_id
         except RateLimitError as e:
-            if attempt < max_retries:
-                log_event("RATE_LIMITED", attempt=attempt + 1, retrying_in_seconds=backoff)
-                time.sleep(backoff)
-                backoff *= 2
+            delay = retry.delay_after(attempt)
+            if delay is not None:
+                log_event("RATE_LIMITED", attempt=attempt + 1, retrying_in_seconds=delay)
+                time.sleep(delay)
                 continue
             event_id = record_billed_usage(
                 call_type, model, 0, "not_billed_rate_limit"
@@ -1381,17 +1339,11 @@ def call_model_streaming(
     completed_response = None
     failed_response = None
     try:
-        content = [{"type": "input_text", "text": prompt}]
-        if img is not None:
-            content.append({"type": "input_image", "image_url": image_data_url(img)})
         stream = client.with_options(timeout=timeout_seconds).responses.create(
             model=model,
             instructions=SYSTEM,
             reasoning={"effort": reasoning_effort},
-            input=[{
-                "role": "user",
-                "content": content,
-            }],
+            input=response_content(prompt, image_data_url(img) if img is not None else None),
             stream=True,
         )
         for event in stream:
@@ -1844,9 +1796,7 @@ def main():
     started = time.time()
     # Start tool-favored so the first autonomous opportunity demonstrates
     # ownership instead of defaulting to another spoken observation.
-    autonomous_non_tool_streak = int(
-        CONFIG.get("autonomous_tool_after_non_tool_turns", 4)
-    )
+    cadence = AutonomyCadence(CONFIG.get("autonomous_tool_after_non_tool_turns", 4))
 
     log_event(
         "SESSION_START",
@@ -1970,7 +1920,6 @@ def main():
                 continue
 
             available_youtube = _dashboard.youtube_context(spontaneous=True)
-            tool_after = max(2, int(CONFIG.get("autonomous_tool_after_non_tool_turns", 4)))
             active_brain_plan = _brain.current_plan if _brain is not None and game_event else None
             critical_interrupt = bool(
                 performance.interrupt
@@ -1981,9 +1930,10 @@ def main():
                 "boss_start", "boss_wipe", "player_death", "hardcore_player_death",
                 "critical_health", "danger_recovered",
             }
-            tool_turn = (
-                bool(game_event) or (interesting_change and autonomous_non_tool_streak >= tool_after)
-            ) and bool(available_youtube.get("videos")) and not critical_interrupt and event_type not in talk_first_events
+            tool_turn = cadence.should_offer_tool(
+                game_event=bool(game_event), interesting_change=interesting_change,
+                media=bool(available_youtube.get("videos")),
+            ) and not critical_interrupt and event_type not in talk_first_events
             route = hybrid_route(
                 tool_turn=tool_turn,
                 has_game_event=bool(game_event),
@@ -2210,15 +2160,12 @@ waiting for Tony to ask.
             if not _tts_speaking.is_set():
                 set_body_state(BodyState.IDLE, "observation_complete")
 
-            if autonomous_tool_used:
-                autonomous_non_tool_streak = 0
-            else:
-                autonomous_non_tool_streak += 1
+            cadence.record(autonomous_tool_used)
             log_event(
                 "AUTONOMY_CADENCE",
                 mode="tool_favored" if tool_turn else "open",
                 selected=kind,
-                non_tool_streak=autonomous_non_tool_streak,
+                non_tool_streak=cadence.non_tool_streak,
                 api_call_count=_api_call_count,
             )
             if _director is not None:
