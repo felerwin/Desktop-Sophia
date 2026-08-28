@@ -794,7 +794,11 @@ class VoiceListener:
                         text,
                         average_logprob=average_logprob,
                         voiced_seconds=voiced_seconds,
-                        minimum_logprob=CONFIG.get("mic_minimum_transcript_logprob", -0.7),
+                        minimum_logprob=CONFIG.get(
+                            "mic_local_minimum_transcript_logprob", -1.0
+                        ) if self.local_transcriber is not None else CONFIG.get(
+                            "mic_minimum_transcript_logprob", -0.7
+                        ),
                         short_fragment_seconds=CONFIG.get(
                             "mic_short_fragment_seconds", 0.45
                         ),
@@ -1660,7 +1664,7 @@ def main():
             base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
             api_key="ollama",
         )
-        legacy_model = os.getenv("EMBER_LOCAL_MODEL", "qwen3-vl:8b-instruct")
+        legacy_model = os.getenv("EMBER_LOCAL_MODEL", "qwen3-vl:4b-instruct")
         companion_model = legacy_model
         router_model = legacy_model
         log_event("LOCAL_AI_CONFIGURED", provider="ollama", model=legacy_model)
