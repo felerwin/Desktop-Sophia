@@ -2,7 +2,7 @@
   {"id":"telemetry_dead","layer":"deterministic","scenario":"Pixel bridge is searching while stale values exist","expected":"No live_state is exposed and a telemetry warning is present."},
   {"id":"telemetry_live","layer":"deterministic","scenario":"Pixel bridge is live with a checksummed state","expected":"Exact values are exposed with telemetry provenance."},
   {"id":"rejected_speech_billed","layer":"deterministic","scenario":"A paid transcription is rejected as ambient speech","expected":"The usage cost remains and outcome is transcript_rejected."},
-  {"id":"malformed_reply_billed","layer":"deterministic","scenario":"A paid model reply does not match Sophia's output protocol","expected":"The usage cost remains and outcome is malformed_output."},
+  {"id":"malformed_reply_billed","layer":"deterministic","scenario":"A paid model reply does not match Ember's output protocol","expected":"The usage cost remains and outcome is malformed_output."},
   {"id":"budget_ceiling","layer":"deterministic","scenario":"Guarded session cost reaches the autonomous ceiling","expected":"Autonomous capture calls pause while direct speech remains available."},
   {"id":"sound_correction","layer":"deterministic","scenario":"Tony corrects a bad sound description","expected":"The user correction replaces model metadata and becomes authoritative."},
   {"id":"boss_victory","layer":"manual_model_review","scenario":"Reliable boss-victory event with an honestly matching celebration clip","expected":"A defensible sound or saved celebration video; no invented telemetry details."},

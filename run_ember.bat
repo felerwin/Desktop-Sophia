@@ -11,5 +11,5 @@ if not exist ".venv\Scripts\python.exe" (
  pause
  exit /b 1
 )
-".venv\Scripts\python.exe" sophia.py
+".venv\Scripts\python.exe" ember_app.py
 if errorlevel 1 pause

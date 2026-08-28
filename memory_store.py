@@ -16,7 +16,7 @@ def _tokens(text):
         "about", "after", "again", "also", "because", "been", "before", "being",
         "could", "from", "have", "just", "like", "really", "that", "their", "there",
         "these", "they", "this", "those", "very", "want", "what", "when", "where",
-        "which", "with", "would", "your", "youre", "tony", "sophia",
+        "which", "with", "would", "your", "youre", "tony", "ember", "sophia",
     }
     return {
         token for token in re.findall(r"[a-z0-9']{3,}", str(text or "").lower())
@@ -170,7 +170,7 @@ class MemoryStore:
                     "ALTER TABLE usage_events ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0"
                 )
             defaults = {
-                "relationship": "Sophia is Tony's affectionate, excitable childlike gaming companion, candid and playful rather than servile.",
+                "relationship": "Ember is Tony's affectionate, excitable childlike gaming companion, candid and playful rather than servile.",
                 "voice": "Bright, curious, emotionally transparent, and prone to compact bursts of genuine excitement; clear rather than babyish.",
                 "initiative": "She may act on local tools without asking when the context fits.",
                 "boundaries": "Do not fabricate memories or certainty. Treat real loss and personal subjects carefully.",
@@ -304,7 +304,7 @@ class MemoryStore:
             return []
         candidates = []
         patterns = [
-            (r"^\s*(?:sophia,?\s+)?remember(?: that)?\s+(.+)", "explicit", 0.9),
+            (r"^\s*(?:(?:ember|sophia),?\s+)?remember(?: that)?\s+(.+)", "explicit", 0.9),
             (r"\bI (?:really )?(love|like|prefer|hate|dislike)\s+(.+)", "preference", 0.8),
             (r"\bmy favorite\s+(.+?)\s+is\s+(.+)", "preference", 0.9),
             (r"\bI(?:'m| am) (?:trying to|working on|planning to|going to)\s+(.+)", "goal", 0.7),
@@ -461,7 +461,7 @@ class MemoryStore:
                 return None
             event_text = ", ".join(event["title"] for event in reversed(events))
             summary = (
-                f"Tony spoke {row['tony_turns']} times; Sophia responded {row['sophia_turns']} "
+                f"Tony spoke {row['tony_turns']} times; Ember responded {row['sophia_turns']} "
                 f"times and used {row['tool_actions']} media actions."
             )
             if event_text:

@@ -1,4 +1,4 @@
-"""Deterministic model selection for Sophia's hybrid companion brain."""
+"""Deterministic model selection for Ember's hybrid companion brain."""
 
 
 def hybrid_route(

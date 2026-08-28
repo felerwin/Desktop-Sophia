@@ -24,7 +24,7 @@ def main():
         spotify.authorize_interactively()
     except SpotifyError as exc:
         raise SystemExit("Spotify setup failed: " + str(exc)) from exc
-    print("Spotify is connected. You can start Sophia normally now.")
+    print("Spotify is connected. You can start Ember normally now.")
 
 
 if __name__ == "__main__":

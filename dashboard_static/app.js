@@ -36,11 +36,11 @@ function escapeHtml(value) {
 function renderMessages(messages) {
   const visible = messages.slice(locallyCleared);
   if (!visible.length) {
-    $("messages").innerHTML = '<div class="emptyState">Conversation will appear here when Sophia hears you.</div>';
+    $("messages").innerHTML = '<div class="emptyState">Conversation will appear here when Ember hears you.</div>';
     return;
   }
   $("messages").innerHTML = visible.slice(-12).reverse().map((message) => {
-    const sophia = message.speaker === "Sophia";
+    const sophia = message.speaker === "Ember";
     return `<div class="message ${sophia ? "sophia" : "tony"}"><span>${sophia ? "S" : "T"}</span><div><small>${escapeHtml(message.speaker)} · ${escapeHtml(message.time)}</small><p>${escapeHtml(message.text)}</p></div></div>`;
   }).join("");
 }
@@ -66,7 +66,7 @@ function renderVideoShelf(videos) {
   if (signature === videoSignature) return;
   videoSignature = signature;
   if (!videos.length) {
-    $("savedVideos").innerHTML = '<div class="soundEmpty"><strong>The shelf is empty</strong><span>Paste a YouTube link to give Sophia her first video.</span></div>';
+    $("savedVideos").innerHTML = '<div class="soundEmpty"><strong>The shelf is empty</strong><span>Paste a YouTube link to give Ember her first video.</span></div>';
     return;
   }
   $("savedVideos").innerHTML = videos.map((video) =>
@@ -145,9 +145,9 @@ function renderMemories(memory) {
     memorySignature = signature;
     $("memoryList").innerHTML = items.length ? items.map((item) =>
       `<div class="memoryItem"><span>${escapeHtml(item.category)}${item.pinned ? " · pinned" : ""}</span><div><strong>${escapeHtml(item.subject || "Untitled memory")}</strong><p>${escapeHtml(item.content)}</p><small>importance ${Number(item.importance).toFixed(1)} · confidence ${Number(item.confidence).toFixed(1)} · ${escapeHtml(item.source)}</small></div><button type="button" data-memory-archive="${encodeURIComponent(item.id)}" aria-label="Forget this memory">×</button></div>`
-    ).join("") : '<div class="soundEmpty"><strong>No long-term memories yet</strong><span>Tell Sophia “remember that…” or add one here.</span></div>';
+    ).join("") : '<div class="soundEmpty"><strong>No long-term memories yet</strong><span>Tell Ember “remember that…” or add one here.</span></div>';
     $("sessionList").innerHTML = sessions.length ? sessions.map((session) =>
-      `<div class="sessionItem"><time>${escapeHtml(session.started_at)}</time><p>${escapeHtml(session.summary || "Session in progress")}</p><small>${session.tony_turns} Tony · ${session.sophia_turns} Sophia · ${session.tool_actions} tools · $${Number(session.estimated_cost || 0).toFixed(4)}</small></div>`
+      `<div class="sessionItem"><time>${escapeHtml(session.started_at)}</time><p>${escapeHtml(session.summary || "Session in progress")}</p><small>${session.tony_turns} Tony · ${session.sophia_turns} Ember · ${session.tool_actions} tools · $${Number(session.estimated_cost || 0).toFixed(4)}</small></div>`
     ).join("") : '<div class="soundEmpty"><span>No completed sessions yet.</span></div>';
   }
   const profile = memory.profile || {};
@@ -297,7 +297,7 @@ async function refresh() {
     if (!response.ok) throw new Error("Dashboard API unavailable");
     render(await response.json());
   } catch (error) {
-    $("diagnosticState").textContent = "Waiting for Sophia";
+    $("diagnosticState").textContent = "Waiting for Ember";
   }
 }
 
@@ -366,7 +366,7 @@ $("memoryForm").addEventListener("submit", async (event) => {
 
 $("memoryList").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-memory-archive]");
-  if (!button || !window.confirm("Let Sophia forget this memory?")) return;
+  if (!button || !window.confirm("Let Ember forget this memory?")) return;
   await fetch(`${apiBase}/api/memory/archive`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: decodeURIComponent(button.dataset.memoryArchive) }),
@@ -399,7 +399,7 @@ $("gameConfigForm").addEventListener("submit", async (event) => {
       game_mode: $("wowGameMode").value,
     }),
   });
-  $("gameEventStatus").textContent = "Saved · restart Sophia if changing an active log";
+  $("gameEventStatus").textContent = "Saved · restart Ember if changing an active log";
 });
 
 document.querySelectorAll("[data-test-event]").forEach((button) => {
@@ -461,7 +461,7 @@ $("youtubeForm").addEventListener("submit", async (event) => {
   }
   event.currentTarget.reset();
   videoSignature = "";
-  $("youtubeStatus").textContent = "Saved to Sophia’s shelf";
+  $("youtubeStatus").textContent = "Saved to Ember’s shelf";
   refresh();
 });
 
@@ -472,7 +472,7 @@ $("savedVideos").addEventListener("click", async (event) => {
     return;
   }
   const remove = event.target.closest("[data-video-remove]");
-  if (remove && window.confirm("Remove this video from Sophia’s shelf?")) {
+  if (remove && window.confirm("Remove this video from Ember’s shelf?")) {
     await fetch(`${apiBase}/api/youtube/remove`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: decodeURIComponent(remove.dataset.videoRemove) }),
@@ -500,7 +500,7 @@ $("youtubeVolume").addEventListener("input", (event) => {
 });
 
 $("sleepButton").addEventListener("click", async () => {
-  if (!window.confirm("Put Sophia to sleep?")) return;
+  if (!window.confirm("Put Ember to sleep?")) return;
   await fetch(`${apiBase}/api/sleep`, { method: "POST" });
 });
 

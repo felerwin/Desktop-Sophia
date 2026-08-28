@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Send to Sophia's Tube",
+  "name": "Send to Ember's Tube",
   "version": "1.0.0",
-  "description": "Send the current YouTube video and playback time to Sophia's local dashboard.",
+  "description": "Send the current YouTube video and playback time to Ember's local dashboard.",
   "permissions": ["activeTab", "scripting"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Send this video to Sophia"
+    "default_title": "Send this video to Ember"
   }
 }

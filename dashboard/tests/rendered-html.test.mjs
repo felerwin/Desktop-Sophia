@@ -23,13 +23,13 @@ async function render() {
   );
 }
 
-test("server-renders Sophia's dashboard", async () => {
+test("server-renders Ember's dashboard", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Sophia · Desktop Companion<\/title>/i);
+  assert.match(html, /<title>Ember · Desktop Companion<\/title>/i);
   assert.match(html, /Desktop Companion/i);
   assert.match(html, /Put her to sleep/i);
   assert.match(html, /THE TUBE/i);
@@ -37,18 +37,18 @@ test("server-renders Sophia's dashboard", async () => {
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/i);
 });
 
-test("keeps the dashboard source and metadata Sophia-specific", async () => {
+test("keeps the dashboard source and metadata Ember-specific", async () => {
   const [page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(layout, /Sophia · Desktop Companion/);
+  assert.match(layout, /Ember · Desktop Companion/);
   assert.match(page, /className="shell"/);
   assert.match(page, /id="the-tube"/);
   assert.match(page, /Game-event awareness/);
-  assert.match(page, /What Sophia remembers/);
+  assert.match(page, /What Ember remembers/);
   assert.doesNotMatch(page, /_sites-preview|SkeletonPreview/);
   assert.doesNotMatch(packageJson, /WRANGLER_LOG_PATH=/);
 });

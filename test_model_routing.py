@@ -29,7 +29,7 @@ class HybridRoutingTests(unittest.TestCase):
 class EventLoggingRegressionTests(unittest.TestCase):
     def test_log_event_allows_an_event_type_field(self):
         tree = ast.parse(
-            (Path(__file__).parent / "sophia.py").read_text(encoding="utf-8")
+            (Path(__file__).parent / "ember_app.py").read_text(encoding="utf-8")
         )
         function = next(
             node for node in tree.body

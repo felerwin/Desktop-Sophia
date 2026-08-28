@@ -80,7 +80,7 @@ class SpotifyClient:
                 result["code"] = params.get("code", [None])[0]
                 result["error"] = params.get("error", [None])[0]
                 body = (
-                    b"<html><body><h2>Spotify connected to Sophia.</h2>"
+                    b"<html><body><h2>Spotify connected to Ember.</h2>"
                     b"<p>You can close this tab and return to the console.</p></body></html>"
                 )
                 handler_self.send_response(200)

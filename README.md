@@ -1,5 +1,10 @@
 # Desktop Ember
 
+`ember_app.py` is the canonical application entry point. A few lowercase
+`sophia_*` database fields and the installed `SophiaInsight` WoW addon name are
+retained solely for compatibility with existing memories and SavedVariables;
+they do not name the current persona.
+
 Desktop Ember is a Windows gaming companion that can watch the selected screen,
 listen through a microphone, converse through an OpenAI model, and speak locally
 with Chatterbox Turbo. She has a local dashboard, long-term memory, a saved
@@ -41,12 +46,12 @@ does not replace `.env`, `config.json`, memory, logs, caches, or Python environm
 - An NVIDIA GPU with about 6 GB VRAM is recommended for Chatterbox Turbo.
 - Ember starts listening immediately while Chatterbox warms in the background.
 
-No Node.js installation is required to run Sophia; the compiled dashboard is
+No Node.js installation is required to run Ember; the compiled dashboard is
 included. Frontend developers can rebuild the source under `dashboard/`.
 
 ## Everyday use
 
-Starting Sophia opens a private local dashboard at:
+Starting Ember opens a private local dashboard at:
 
 `http://127.0.0.1:8766/`
 
@@ -55,7 +60,7 @@ spontaneous remarks, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
 
-Sophia uses a hybrid model route. Terra handles direct conversation, open-ended
+Ember uses a hybrid model route. Terra handles direct conversation, open-ended
 screen understanding, and reliable game events with low reasoning effort. Luna
 handles routine video-only decisions at no reasoning effort. Set
 `OPENAI_COMPANION_MODEL` and `OPENAI_ROUTER_MODEL` in `.env` to change either
@@ -65,7 +70,7 @@ role independently.
 
 The dashboard shows both the raw session estimate and a safety-adjusted guarded
 amount. OpenAI usage is written to the local SQLite ledger as soon as a response
-returns, before Sophia parses, filters, or rejects its content. A malformed model
+returns, before Ember parses, filters, or rejects its content. A malformed model
 reply or rejected transcription therefore still counts toward the total.
 
 At the configured ceiling, only autonomous screen and game-reaction calls pause;
@@ -88,7 +93,7 @@ audio is recorded as `TRANSCRIPT_REJECTED` in the session log for tuning.
 
 Save YouTube links, cue times, and usage notes in the dashboard. The optional
 unpacked extension in `chrome_extension/` can send the current YouTube video and
-timestamp to Sophia's shelf. No YouTube API key is required.
+timestamp to Ember's shelf. No YouTube API key is required.
 
 ### Spotify
 
@@ -104,7 +109,7 @@ Spotify's authorization cache is local and excluded from Git.
 ### World of Warcraft / ChromieCraft
 
 Copy `chromiecraft_addon/SophiaInsight` into the game's `Interface/AddOns`
-folder and enable the addon. Its visible pixel bridge gives Sophia read-only
+folder and enable the addon. Its visible pixel bridge gives Ember read-only
 state, target, equipment, loot, and zone data. Combat-log events can additionally
 be configured from the dashboard.
 
@@ -113,7 +118,7 @@ activity changes, combat boundaries, minimum health during a fight, danger and
 recovery, probable hard-fought victories, zone changes, and equipment upgrades.
 The decoder accepts fractionally scaled grids from maximized or GPU-scaled game
 windows. Bridge transitions are written as `PIXEL_BRIDGE_STATUS`; only `live`
-status exposes exact grid values to Sophia, preventing stale or screenshot-derived
+status exposes exact grid values to Ember, preventing stale or screenshot-derived
 details from being described as addon telemetry.
 Dashboard events identify both their evidence source and confidence. Exact addon
 values are labeled `telemetry`; conclusions formed across several exact states are
@@ -137,7 +142,7 @@ installation.
 
 ```powershell
 .venv\Scripts\python.exe -m unittest test_game_events.py test_reliability.py test_spotify_control.py test_usage_costs.py test_behavior_fixtures.py test_model_routing.py
-.venv\Scripts\python.exe -m py_compile sophia.py dashboard_server.py game_events.py memory_store.py model_routing.py speech_filter.py spotify_control.py usage_costs.py wow_pixel_bridge.py
+.venv\Scripts\python.exe -m py_compile ember_app.py dashboard_server.py game_events.py memory_store.py model_routing.py speech_filter.py spotify_control.py usage_costs.py wow_pixel_bridge.py
 cd dashboard
 npm install
 npm test
@@ -145,7 +150,7 @@ npm test
 
 ## Status
 
-Desktop Sophia is an evolving personal prototype. Screen interpretation can be
+Desktop Ember is an evolving personal prototype. Screen interpretation can be
 wrong, and autonomous reactions should be treated as companion behavior rather
 than reliable gameplay advice. The WoW bridge is read-only and never injects
 keyboard or mouse input.

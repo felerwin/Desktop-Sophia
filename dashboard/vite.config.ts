@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
 
-// Sophia's dashboard is intentionally local-only and needs no hosted storage.
+// Ember's dashboard is intentionally local-only and needs no hosted storage.
 const d1 = null;
 const r2 = null;
 

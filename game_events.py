@@ -85,7 +85,7 @@ class GameEventEngine:
         if self.thread and self.thread.is_alive():
             return
         self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, name="sophia-game-events", daemon=True)
+        self.thread = threading.Thread(target=self._run, name="ember-game-events", daemon=True)
         self.thread.start()
         if self.config.get("wow_pixel_bridge", True):
             self.pixel_bridge.start()

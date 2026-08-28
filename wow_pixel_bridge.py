@@ -8,7 +8,7 @@ import mss
 
 
 class WowPixelBridge:
-    """Decode Sophia Insight's visible, one-way pixel telemetry grid."""
+    """Decode Ember Insight's visible, one-way pixel telemetry grid."""
 
     PALETTE = [
         (0, 0, 0), (255, 255, 255), (255, 0, 0), (0, 255, 0),
@@ -43,7 +43,7 @@ class WowPixelBridge:
         if self.thread and self.thread.is_alive():
             return
         self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, name="sophia-wow-pixels", daemon=True)
+        self.thread = threading.Thread(target=self._run, name="ember-wow-pixels", daemon=True)
         self.thread.start()
 
     def stop(self):

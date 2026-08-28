@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title Desktop Sophia Installer
+title Desktop Ember Installer
 cd /d "%~dp0"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_windows.ps1"
@@ -12,7 +12,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo Desktop Sophia is installed.
-echo Add your OpenAI API key to .env, then double-click run_sophia.bat.
+echo Desktop Ember is installed.
+echo Add your OpenAI API key to .env, then double-click run_ember.bat.
 if exist ".env" start "" notepad.exe "%~dp0.env"
 pause

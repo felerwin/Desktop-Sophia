@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Desktop Sophia Portable Setup
+title Desktop Ember Portable Setup
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_windows.ps1" -Portable
 if errorlevel 1 (
     echo.
@@ -10,5 +10,5 @@ if errorlevel 1 (
     exit /b 1
 )
 echo.
-echo Portable Sophia is ready on this drive.
+echo Portable Ember is ready on this drive.
 pause

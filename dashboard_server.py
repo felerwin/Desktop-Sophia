@@ -127,11 +127,11 @@ class DashboardHub:
             elif event_type in {"VOICE_REPLY", "SAY"}:
                 text = fields.get("text", "")
                 if text:
-                    self.messages.append({"speaker": "Sophia", "text": text, "time": timestamp})
+                    self.messages.append({"speaker": "Ember", "text": text, "time": timestamp})
             elif event_type == "SPOTIFY_COMMAND":
                 reply = fields.get("reply", "")
                 if reply:
-                    self.messages.append({"speaker": "Sophia", "text": reply, "time": timestamp})
+                    self.messages.append({"speaker": "Ember", "text": reply, "time": timestamp})
             elif event_type == "API_USAGE":
                 self.state["session_cost"] = fields.get(
                     "session_estimated_cost_usd", self.state["session_cost"]
@@ -245,7 +245,7 @@ class DashboardHub:
         if sound is None:
             raise ValueError("Sound not found.")
         if not description:
-            raise ValueError("Tell Sophia what the clip actually contains.")
+            raise ValueError("Tell Ember what the clip actually contains.")
         with self.lock:
             library = self._load_sound_library()
             current = dict(library.get(sound["id"], {}))
@@ -367,7 +367,7 @@ class DashboardHub:
                 library[sound["id"]] = {
                     **library.get(sound["id"], {}),
                     "status": "analyzing",
-                    "description": "Sophia is listening…",
+                    "description": "Ember is listening…",
                 }
                 pending_paths.append(self.soundboard_root / sound["id"])
         self._save_sound_library(library)
@@ -388,7 +388,7 @@ class DashboardHub:
             except Exception as exc:
                 metadata = {
                     "status": "error",
-                    "description": "Sophia couldn’t identify this clip yet.",
+                    "description": "Ember couldn’t identify this clip yet.",
                     "use_when": "",
                     "error": str(exc)[:300],
                 }
@@ -475,7 +475,7 @@ class DashboardHub:
                 None,
             )
             if last_spontaneous and now - last_spontaneous["time"] < minimum_gap:
-                raise ValueError("Sophia's soundboard is cooling down.")
+                raise ValueError("Ember's soundboard is cooling down.")
             clip_cooldown = float(self.config.get("soundboard_clip_cooldown_seconds", 300))
             last_same = next(
                 (
@@ -485,7 +485,7 @@ class DashboardHub:
                 None,
             )
             if last_same and now - last_same["time"] < clip_cooldown:
-                raise ValueError("Sophia used that clip too recently.")
+                raise ValueError("Ember used that clip too recently.")
         self.sound_play_handler(self.soundboard_root / match["id"], match["name"], chosen_volume)
         self.sound_history.append({
             "id": match["id"],
@@ -656,7 +656,7 @@ class DashboardHub:
                     None,
                 )
                 if last_spontaneous and now - last_spontaneous["time"] < minimum_gap:
-                    raise ValueError("Sophia's YouTube player is cooling down.")
+                    raise ValueError("Ember's YouTube player is cooling down.")
             command.update({
                 "id": match["id"], "video_id": match["video_id"], "title": match["title"],
                 "seconds": self._time_seconds(match.get("start_seconds", 0) if seconds is None else seconds),
@@ -800,7 +800,7 @@ class DashboardHub:
             library = self._load_sound_library()
             library[target.name] = {
                 "status": "analyzing" if self.sound_analyzer is not None else "pending",
-                "description": "Sophia is listening…" if self.sound_analyzer is not None else "Waiting for Sophia to listen.",
+                "description": "Ember is listening…" if self.sound_analyzer is not None else "Waiting for Ember to listen.",
                 "use_when": "",
             }
             self._save_sound_library(library)

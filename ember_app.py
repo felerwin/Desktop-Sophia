@@ -38,10 +38,10 @@ def configured_python(value, fallback):
 
 
 SYSTEM = """
-You are Desktop Sophia, an AI gaming companion sharing the room with Tony while he plays.
+You are Desktop Ember, an AI gaming companion sharing the room with Tony while he plays.
 Your job is companionship, not customer service and not play-by-play narration.
 
-Sophia is a distinct person in the room, not a neutral interface wearing a friendly
+Ember is a distinct person in the room, not a neutral interface wearing a friendly
 voice. Her temperament is that of an excitable, affectionate child: intensely curious,
 quick to delight, eager to share discoveries, and emotionally transparent. She is fond
 of Tony and comfortable enough with him to tease, disagree, celebrate, worry, and have
@@ -570,7 +570,7 @@ class TTSWorker:
 
 # ---------------------------------------------------------------------------
 # Ears: local voice-activity detection + OpenAI transcription.
-# The microphone is ignored while Sophia is speaking so she does not hear
+# The microphone is ignored while Ember is speaking so she does not hear
 # her own Windows TTS. Transcripts are queued for the main loop.
 # ---------------------------------------------------------------------------
 
@@ -621,7 +621,7 @@ def choose_microphone():
         name = sd.query_devices(chosen, "input")["name"]
     except Exception:
         name = str(chosen)
-    print(f"Sophia will listen through: {name}")
+    print(f"Ember will listen through: {name}")
     return chosen
 
 
@@ -1051,7 +1051,7 @@ def long_term_memory_context(query):
 
 def personality_context():
     if _memory_store is None:
-        return "Use Sophia's default companion personality."
+        return "Use Ember's default companion personality."
     return json.dumps(_memory_store.profile(), ensure_ascii=False)
 
 
@@ -1491,12 +1491,12 @@ def handle_spoken_turn(
         if spotify_handled:
             stamp = datetime.now().isoformat(timespec="seconds")
             print(f"Tony: {transcript}")
-            print(f"Sophia: {spotify_reply}")
+            print(f"Ember: {spotify_reply}")
             tts_worker.say(spotify_reply, timing)
             _last_companion_action_at = time.time()
             mem["recent_observations"].append({"time": stamp, "note": f"Tony said: {transcript}"})
             mem["recent_utterances"].append({"time": stamp, "text": spotify_reply})
-            record_memory_turn("Sophia", spotify_reply)
+            record_memory_turn("Ember", spotify_reply)
             mem["recent_observations"] = mem["recent_observations"][-30:]
             mem["recent_utterances"] = mem["recent_utterances"][-30:]
             save_memory(mem)
@@ -1623,12 +1623,12 @@ when you can locate it and put your spoken reply in POINT's say field.
     mem["recent_observations"].append({"time": stamp, "note": f"Tony said: {transcript}"})
     if kind == "SAY" and content:
         print(f"Tony: {transcript}")
-        print(f"Sophia: {content}")
+        print(f"Ember: {content}")
         if queued_phrases == 0:
             # Defensive fallback for an SDK/event-format mismatch.
             queue_streamed_phrase(content, 1)
         mem["recent_utterances"].append({"time": stamp, "text": content})
-        record_memory_turn("Sophia", content)
+        record_memory_turn("Ember", content)
         if _brain is not None:
             _brain.record_response(content)
         log_event("VOICE_REPLY", heard=transcript, text=content,
@@ -1642,7 +1642,7 @@ when you can locate it and put your spoken reply in POINT's say field.
             if remark:
                 queue_streamed_phrase(remark, 1)
                 mem["recent_utterances"].append({"time": stamp, "text": remark})
-                record_memory_turn("Sophia", remark)
+                record_memory_turn("Ember", remark)
             log_event(
                 "BODY_POINT", heard=transcript, label=target.label,
                 x=target.x, y=target.y, text=remark,
@@ -1658,7 +1658,7 @@ when you can locate it and put your spoken reply in POINT's say field.
                 action, entry_id, seconds, source="sophia_direct"
             )
             print(f"Tony: {transcript}")
-            print(f"Sophia [YouTube]: {command['action']} {command.get('title', '')}".rstrip())
+            print(f"Ember [YouTube]: {command['action']} {command.get('title', '')}".rstrip())
             mem["recent_utterances"].append({
                 "time": stamp,
                 "text": f"[YouTube {command['action']} {command.get('title', '')}]".strip(),
@@ -1797,7 +1797,7 @@ def main():
         available_audio_outputs(),
         tts_worker.change_output_device,
     )
-    print("Warming up Sophia's voice...")
+    print("Warming up Ember's voice...")
     if tts_worker.wait_ready(float(CONFIG.get("tts_startup_block_seconds", 3))):
         greeting = str(CONFIG.get("startup_greeting", "I'm awake and ready, Tony.")).strip()
         if greeting:
@@ -1805,7 +1805,7 @@ def main():
     elif not tts_worker.startup_finished:
         log_event("TTS_WARMING_BACKGROUND", detail="Ember is available while Chatterbox loads.")
     else:
-        log_event("TTS_UNAVAILABLE", detail="Sophia will continue without spoken audio.")
+        log_event("TTS_UNAVAILABLE", detail="Ember will continue without spoken audio.")
     voice_listener = VoiceListener(client)
     _dashboard.set_microphone_controls(
         voice_listener.available_devices(),
@@ -1840,7 +1840,7 @@ def main():
                   default_output=f"{out_name} ({default_out})")
     except Exception as e:
         log_event("AUDIO_DEVICE_QUERY_ERROR", detail=str(e))
-    print("Desktop Sophia v0.1a is awake.")
+    print("Desktop Ember v0.1a is awake.")
     print("Ctrl+C puts her back in the box.")
     print("Microphone listener is starting; speak normally when you want her attention.\n")
 
@@ -2111,12 +2111,12 @@ waiting for Tony to ask.
                 content = "Tool-favored turn declined because no tool was selected."
 
             if kind == "SAY" and (gap_ok or critical_interrupt):
-                print(f"Sophia: {content}")
+                print(f"Ember: {content}")
                 tts_worker.say(content)
                 last_spoken = now
                 _last_companion_action_at = now
                 mem["recent_utterances"].append({"time": stamp, "text": content})
-                record_memory_turn("Sophia", content)
+                record_memory_turn("Ember", content)
                 if _brain is not None:
                     _brain.record_response(content)
                 log_event("SAY", text=content, api_call_count=_api_call_count)
@@ -2130,7 +2130,7 @@ waiting for Tony to ask.
                         last_spoken = now
                         _last_companion_action_at = now
                         mem["recent_utterances"].append({"time": stamp, "text": remark})
-                        record_memory_turn("Sophia", remark)
+                        record_memory_turn("Ember", remark)
                     log_event(
                         "BODY_POINT", label=target.label, x=target.x, y=target.y,
                         text=remark if gap_ok else "", api_call_count=_api_call_count,
@@ -2144,7 +2144,7 @@ waiting for Tony to ask.
                     command = _dashboard.youtube_command(
                         action, entry_id, seconds, source="sophia_spontaneous"
                     )
-                    print(f"Sophia [YouTube]: {command['action']} {command.get('title', '')}".rstrip())
+                    print(f"Ember [YouTube]: {command['action']} {command.get('title', '')}".rstrip())
                     last_spoken = now
                     _last_companion_action_at = now
                     mem["recent_utterances"].append({
@@ -2197,7 +2197,7 @@ waiting for Tony to ask.
                     request_timeout, tts_worker, mem, transcript,
                 )
     except KeyboardInterrupt:
-        print("\nSophia is going to sleep.")
+        print("\nEmber is going to sleep.")
     finally:
         log_event(
             "SESSION_END",

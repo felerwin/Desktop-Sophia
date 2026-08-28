@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sophia · Desktop Companion</title>
-  <meta name="description" content="Sophia's local companion dashboard">
+  <title>Ember · Desktop Companion</title>
+  <meta name="description" content="Ember's local companion dashboard">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div class="identity"><div class="avatar"><span></span></div><div><p class="eyebrow">DESKTOP COMPANION</p><h1>Sophia</h1></div></div>
+      <div class="identity"><div class="avatar"><span></span></div><div><p class="eyebrow">DESKTOP COMPANION</p><h1>Ember</h1></div></div>
       <div class="headerActions"><div class="statusPill" id="statusPill"><i></i> Starting up</div><button class="sleepButton" id="sleepButton">Put her to sleep</button></div>
     </header>
     <section class="pulseCard">
@@ -43,23 +43,23 @@
             <h4>Add something to her shelf</h4>
             <input id="youtubeUrl" type="url" required placeholder="YouTube link">
             <div class="videoFormRow"><input id="youtubeTitle" type="text" maxlength="120" placeholder="Title"><input id="youtubeStart" type="text" placeholder="Start · 0:23"></div>
-            <textarea id="youtubeUseWhen" maxlength="280" placeholder="When should Sophia use this? e.g. after I finally beat a boss"></textarea>
+            <textarea id="youtubeUseWhen" maxlength="280" placeholder="When should Ember use this? e.g. after I finally beat a boss"></textarea>
             <button type="submit">Save video</button>
           </form>
-          <div class="savedVideos" id="savedVideos"><div class="soundEmpty"><strong>The shelf is empty</strong><span>Paste a YouTube link to give Sophia her first video.</span></div></div>
+          <div class="savedVideos" id="savedVideos"><div class="soundEmpty"><strong>The shelf is empty</strong><span>Paste a YouTube link to give Ember her first video.</span></div></div>
         </div>
       </div>
     </section>
     <section class="workspace">
       <article class="conversation panel">
         <div class="panelHeader"><div><p class="eyebrow">LIVE ROOM</p><h3>Conversation</h3></div><button class="textButton" id="clearTranscript">Clear transcript</button></div>
-        <div class="messages" id="messages"><div class="emptyState">Conversation will appear here when Sophia hears you.</div></div>
+        <div class="messages" id="messages"><div class="emptyState">Conversation will appear here when Ember hears you.</div></div>
         <div class="hearing"><i></i><span id="hearingText">Warming up…</span><kbd>LIVE</kbd><small>microphone</small></div>
       </article>
       <aside class="rail">
         <article class="panel controls">
           <div class="panelHeader"><div><p class="eyebrow">BEHAVIOR</p><h3>Autonomy</h3></div></div>
-          <div class="deviceControl"><label for="voiceSelector"><span><strong>Sophia’s voice</strong><small>Changes live after the current sentence</small></span></label><select id="voiceSelector" aria-label="Sophia’s voice"><option>Loading voices…</option></select></div>
+          <div class="deviceControl"><label for="voiceSelector"><span><strong>Ember’s voice</strong><small>Changes live after the current sentence</small></span></label><select id="voiceSelector" aria-label="Ember’s voice"><option>Loading voices…</option></select></div>
           <div class="deviceControl"><label for="microphoneSelector"><span><strong>Input microphone</strong><small>Reconnects the listener live</small></span></label><select id="microphoneSelector" aria-label="Input microphone"><option>Loading microphones…</option></select></div>
           <div class="deviceControl"><label for="audioOutputSelector"><span><strong>Audio output</strong><small>Reloads Chatterbox on the selected device</small></span></label><select id="audioOutputSelector" aria-label="Audio output"><option>Loading speakers…</option></select></div>
           <div class="budgetControl" id="budgetControl"><span><strong id="budgetState">Autonomy budget ready</strong><small id="budgetDetail">Session estimate is starting…</small></span><button id="resumeBudget" type="button" hidden>Resume this session</button></div>
@@ -68,24 +68,24 @@
           <label><span><strong>Spontaneous remarks</strong><small>Respect the quiet-time rules</small></span><input data-control="spontaneous_remarks" type="checkbox"></label>
           <label><span><strong>Long-term memory</strong><small>Recall relevant facts across sessions</small></span><input data-control="long_term_memory" type="checkbox"></label>
           <label><span><strong>Game-event awareness</strong><small>React to reliable local game signals</small></span><input data-control="game_event_awareness" type="checkbox"></label>
-          <label><span><strong>Video autonomy</strong><small>Sophia may use videos from her saved shelf</small></span><input data-control="music_autonomy" type="checkbox"></label>
+          <label><span><strong>Video autonomy</strong><small>Ember may use videos from her saved shelf</small></span><input data-control="music_autonomy" type="checkbox"></label>
           <div class="eventTestRow bodyTestRow"><span>Body Lab</span><button type="button" data-body-test="idle">Idle</button><button type="button" data-body-test="wave">Wave</button><button type="button" data-body-test="jump">Jump</button><button type="button" data-body-test="worry">Worry</button><button type="button" data-body-test="startle">Startle</button><button type="button" data-body-test="proud">Proud</button><button type="button" data-body-test="curious">Curious</button><button type="button" data-body-test="determined">Determined</button><button type="button" data-body-test="sleepy">Sleepy</button><button type="button" data-body-test="annoyed">Annoyed</button><button type="button" data-body-test="confused">Confused</button><button type="button" data-body-test="skeptical">Skeptical</button><button type="button" data-body-test="affectionate">Affectionate</button><button type="button" data-body-test="relieved">Relieved</button><button type="button" data-body-test="mischievous">Mischievous</button><button type="button" data-body-test="celebrate">Celebrate</button><button type="button" data-body-test="meltdown">Meltdown</button></div>
         </article>
-        <details class="panel diagnostics"><summary><span>Diagnostics</span><small id="diagnosticState">Connecting…</small></summary><pre id="diagnosticLog">Waiting for Sophia…</pre></details>
+        <details class="panel diagnostics"><summary><span>Diagnostics</span><small id="diagnosticState">Connecting…</small></summary><pre id="diagnosticLog">Waiting for Ember…</pre></details>
       </aside>
     </section>
     <section class="intelligenceGrid">
       <article class="panel memoryPanel">
-        <div class="panelHeader"><div><p class="eyebrow">LONG-TERM MEMORY</p><h3>What Sophia remembers</h3></div><small id="memoryStats">Starting memory…</small></div>
+        <div class="panelHeader"><div><p class="eyebrow">LONG-TERM MEMORY</p><h3>What Ember remembers</h3></div><small id="memoryStats">Starting memory…</small></div>
         <form id="memoryForm" class="memoryForm">
           <select id="memoryCategory" aria-label="Memory category"><option value="fact">Fact</option><option value="preference">Preference</option><option value="goal">Goal</option><option value="game">Game</option><option value="person">Person</option><option value="explicit">Important</option></select>
           <input id="memorySubject" maxlength="120" placeholder="Subject · optional">
-          <input id="memoryContent" maxlength="1200" required placeholder="Something Sophia should remember">
+          <input id="memoryContent" maxlength="1200" required placeholder="Something Ember should remember">
           <label>Importance <input id="memoryImportance" type="range" min="0" max="1" step="0.1" value="0.6"></label>
           <label class="pinMemory"><input id="memoryPinned" type="checkbox"> Pin</label>
           <button type="submit">Remember</button>
         </form>
-        <div class="memoryList" id="memoryList"><div class="soundEmpty"><strong>No long-term memories yet</strong><span>Tell Sophia “remember that…” or add one here.</span></div></div>
+        <div class="memoryList" id="memoryList"><div class="soundEmpty"><strong>No long-term memories yet</strong><span>Tell Ember “remember that…” or add one here.</span></div></div>
         <details class="sessionHistory"><summary>Recent session summaries</summary><div id="sessionList"></div></details>
       </article>
       <div class="contextRail">
