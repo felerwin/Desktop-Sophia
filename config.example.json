@@ -30,7 +30,7 @@
   "youtube_volume": 70,
   "youtube_minimum_gap_seconds": 180,
   "dashboard_port": 8766,
-  "dashboard_open_browser": false,
+  "dashboard_open_browser": true,
   "api_timeout_seconds": 30,
   "max_vision_calls_per_minute": 8,
   "autonomy_budget_enabled": true,

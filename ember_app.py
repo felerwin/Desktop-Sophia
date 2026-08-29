@@ -984,7 +984,7 @@ def main():
     try:
         _dashboard.start(
             port=int(CONFIG.get("dashboard_port", 8766)),
-            open_browser=bool(CONFIG.get("dashboard_open_browser", False)),
+            open_browser=bool(CONFIG.get("dashboard_open_browser", True)),
         )
         log_event("DASHBOARD_READY", url=f"http://127.0.0.1:{int(CONFIG.get('dashboard_port', 8766))}/")
     except Exception as exc:

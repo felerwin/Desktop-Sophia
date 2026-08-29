@@ -378,6 +378,8 @@ class EmberOverlay:
         if not hasattr(ctypes, "windll"):
             return
         user32 = ctypes.windll.user32
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetAncestor.restype = ctypes.c_void_p
         hwnd = user32.GetAncestor(hwnd, 2) or hwnd
         get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
         set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
@@ -390,12 +392,22 @@ class EmberOverlay:
         if not hasattr(ctypes, "windll"):
             return
         user32 = ctypes.windll.user32
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetAncestor.restype = ctypes.c_void_p
         hwnd = user32.GetAncestor(hwnd, 2) or hwnd
         get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
         set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+        get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
         get_style.restype = ctypes.c_ssize_t
+        set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
         set_style.restype = ctypes.c_ssize_t
+        user32.CallWindowProcW.argtypes = [
+            ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint,
+            ctypes.c_size_t, ctypes.c_ssize_t,
+        ]
         user32.CallWindowProcW.restype = ctypes.c_ssize_t
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetAncestor.restype = ctypes.c_void_p
         ex_style = get_style(hwnd, -20)
         set_style(hwnd, -20, (ex_style | 0x00080000 | 0x00000080 | 0x08000000) & ~0x00000020)
         WM_NCHITTEST, HTCLIENT, HTTRANSPARENT = 0x0084, 1, -1
