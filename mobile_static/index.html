@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#15111d">
+  <title>Ember</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 50% 5%, #422742, #17121f 45%, #0d0b12); color: #fff7fb; }
+    main { min-height: 100vh; max-width: 720px; margin: auto; display: grid; grid-template-rows: auto auto 1fr auto; padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom)); gap: 10px; }
+    header { display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 1.35rem; letter-spacing: .02em; }
+    #status { color: #dabfdc; font-size: .85rem; }
+    .stage { display: grid; place-items: center; height: min(31vh, 270px); overflow: hidden; }
+    #ember { width: 192px; height: 208px; background: url('/mobile/spritesheet.webp') no-repeat; background-size: 1536px 2288px; transform: scale(1.18); transform-origin: center; filter: drop-shadow(0 14px 20px #0009); }
+    #messages { min-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 6px 2px; }
+    .bubble { max-width: 84%; padding: 10px 13px; border-radius: 17px; line-height: 1.35; white-space: pre-wrap; }
+    .ember { align-self: flex-start; background: #33243c; border-bottom-left-radius: 5px; }
+    .tony { align-self: flex-end; background: #8f476c; border-bottom-right-radius: 5px; }
+    form { display: grid; grid-template-columns: 1fr auto; gap: 9px; }
+    input, button { border: 0; border-radius: 16px; font: inherit; }
+    input { min-width: 0; padding: 14px 16px; color: white; background: #27202f; outline: 1px solid #4d3b58; }
+    input:focus { outline: 2px solid #d37ba8; }
+    button { padding: 0 19px; color: #21111a; background: #f19ac6; font-weight: 750; }
+    button:disabled { opacity: .45; }
+    #error { display: none; background: #572a35; color: #ffd9df; padding: 10px 12px; border-radius: 12px; font-size: .9rem; }
+  </style>
+</head>
+<body>
+<main>
+  <header><h1>Ember</h1><span id="status">Connecting…</span></header>
+  <div class="stage"><div id="ember" role="img" aria-label="Ember"></div></div>
+  <section id="messages" aria-live="polite"></section>
+  <div id="error"></div>
+  <form id="composer"><input id="message" autocomplete="off" maxlength="2000" placeholder="Talk to Ember…"><button id="send">Send</button></form>
+</main>
+<script>
+  const q = new URLSearchParams(location.search);
+  const bridgeToken = window.AndroidBridge?.getToken?.();
+  const token = bridgeToken || q.get('token') || sessionStorage.getItem('emberToken') || '';
+  if (token) sessionStorage.setItem('emberToken', token);
+  if (q.has('token')) history.replaceState({}, '', location.pathname);
+
+  const rows = { idle: 0, moving: 1, amused: 3, excited: 4, concerned: 5, startled: 5, listening: 6, thinking: 7, speaking: 0, pointing: 0 };
+  const counts = { 0: 6, 1: 8, 3: 4, 4: 5, 5: 8, 6: 6, 7: 6 };
+  const ember = document.querySelector('#ember');
+  const messages = document.querySelector('#messages');
+  const status = document.querySelector('#status');
+  const error = document.querySelector('#error');
+  const input = document.querySelector('#message');
+  const send = document.querySelector('#send');
+  let frame = 0, row = 0, lastRows = 0;
+
+  setInterval(() => {
+    frame = (frame + 1) % (counts[row] || 6);
+    ember.style.backgroundPosition = `${-frame * 192}px ${-row * 208}px`;
+  }, 180);
+
+  function showError(text) {
+    error.textContent = text;
+    error.style.display = text ? 'block' : 'none';
+  }
+
+  function render(data) {
+    status.textContent = data.phase_label || data.phase || 'Connected';
+    const state = data.body?.state || data.phase || 'idle';
+    const nextRow = rows[state] ?? 0;
+    if (nextRow !== row) { row = nextRow; frame = 0; }
+    const stick = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
+    messages.replaceChildren(...(data.messages || []).map(item => {
+      const bubble = document.createElement('div');
+      const mine = item.speaker === 'Tony';
+      bubble.className = `bubble ${mine ? 'tony' : 'ember'}`;
+      bubble.textContent = item.text || '';
+      return bubble;
+    }));
+    if (stick || lastRows === 0) messages.scrollTop = messages.scrollHeight;
+    lastRows = (data.messages || []).length;
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(path, {
+      ...options,
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `Connection failed (${response.status})`);
+    return body;
+  }
+
+  async function refresh() {
+    try {
+      render(await api('/api/mobile/state'));
+      showError('');
+    } catch (e) {
+      status.textContent = 'Disconnected';
+      showError(token ? e.message : 'No access token configured in the app.');
+    }
+  }
+
+  document.querySelector('#composer').addEventListener('submit', async event => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    send.disabled = true;
+    try {
+      await api('/api/mobile/message', { method: 'POST', body: JSON.stringify({ text, device: 'Android' }) });
+      input.value = '';
+      await refresh();
+    } catch (e) { showError(e.message); }
+    finally { send.disabled = false; input.focus(); }
+  });
+
+  refresh();
+  setInterval(refresh, 1000);
+</script>
+</body>
+</html>

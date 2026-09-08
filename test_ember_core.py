@@ -1,6 +1,9 @@
 import unittest
 import tempfile
 import threading
+import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from PIL import Image
@@ -83,6 +86,49 @@ class EmberWorldStateTests(unittest.TestCase):
         self.assertEqual(received, [["excited", "amused", "excited"]])
         with self.assertRaises(ValueError):
             dashboard.test_body("invented-animation")
+
+    def test_mobile_turns_are_validated_and_queued(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dashboard = DashboardHub(Path(folder), {}, threading.Event())
+            result = dashboard.submit_mobile_turn("  Hello,   Ember!  ", "Tony's phone")
+            turn = dashboard.pop_mobile_turn()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(turn["text"], "Hello, Ember!")
+        self.assertEqual(turn["source"], "android")
+        self.assertIsNone(dashboard.pop_mobile_turn())
+        with self.assertRaises(ValueError):
+            dashboard.submit_mobile_turn("   ")
+
+    def test_mobile_snapshot_carries_body_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dashboard = DashboardHub(Path(folder), {}, threading.Event())
+            dashboard.record_body_command({"action": "state", "state": "excited"})
+            snapshot = dashboard.mobile_snapshot()
+
+        self.assertEqual(snapshot["body"]["state"], "excited")
+
+    def test_mobile_http_api_requires_token(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dashboard = DashboardHub(
+                Path(folder), {"mobile_access_token": "secret-test-token"}, threading.Event()
+            )
+            dashboard.start(port=0, open_browser=False)
+            port = dashboard.server.server_address[1]
+            url = f"http://127.0.0.1:{port}/api/mobile/state"
+            try:
+                with self.assertRaises(urllib.error.HTTPError) as denied:
+                    urllib.request.urlopen(url)
+                self.assertEqual(denied.exception.code, 401)
+
+                request = urllib.request.Request(
+                    url, headers={"Authorization": "Bearer secret-test-token"}
+                )
+                with urllib.request.urlopen(request) as response:
+                    payload = json.load(response)
+                self.assertEqual(payload["body"]["state"], "idle")
+            finally:
+                dashboard.stop()
 
 
 if __name__ == "__main__":

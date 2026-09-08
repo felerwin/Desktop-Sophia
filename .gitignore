@@ -20,6 +20,9 @@ dashboard/node_modules/
 dashboard/.next/
 dashboard/.wrangler/
 dashboard/dist/
+android/.gradle/
+android/local.properties
+android/**/build/
 
 # Editor and OS noise
 .DS_Store

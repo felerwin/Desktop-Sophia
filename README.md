@@ -55,6 +55,22 @@ spontaneous remarks, YouTube shelf, memories, personality, and game
 telemetry. The console can remain in the background; use the dashboard's sleep
 button to stop the session cleanly.
 
+## Ember for Android (preview)
+
+The `android/` project is Ember's first mobile body. The desktop remains her brain;
+the phone connects over the local network and shares the same conversation, memory,
+reasoning, and body state.
+
+1. Set `mobile_enabled` to `true` in `config.json`.
+2. Put a long, random value in `mobile_access_token`.
+3. Allow TCP port 8766 through Windows Firewall on private networks only.
+4. Build/install the project under `android/`, then enter the desktop's private IP,
+   port, and the same access token on the connection screen.
+
+The preview intentionally binds to the LAN only when explicitly enabled. Do not
+forward port 8766 to the public internet. Remote-away-from-home access should use a
+private VPN such as Tailscale rather than exposing this prototype server directly.
+
 Sophia uses a hybrid model route. Terra handles direct conversation, open-ended
 screen understanding, and reliable game events with low reasoning effort. Luna
 handles routine video-only decisions at no reasoning effort. Set
