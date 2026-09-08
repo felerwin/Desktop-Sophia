@@ -167,6 +167,13 @@ def set_body_state(state, reason=None):
         _embodiment.set_state(state, reason)
 
 
+def render_body_command(command):
+    if _ember_overlay is not None:
+        _ember_overlay.submit(command)
+    if _dashboard is not None:
+        _dashboard.record_body_command(command)
+
+
 def test_body_sequence(states):
     if _embodiment is None:
         raise RuntimeError("Ember's body is not ready.")
@@ -1485,24 +1492,34 @@ def main():
             )
             if not _ember_overlay.start():
                 raise RuntimeError(_ember_overlay.error or "overlay did not become ready")
-            _embodiment = EmbodimentController(_ember_overlay.submit)
+            _embodiment = EmbodimentController(render_body_command)
             set_body_state(BodyState.IDLE, "startup")
             log_event("EMBER_OVERLAY_READY")
         except Exception as exc:
             _ember_overlay = None
             _embodiment = None
             log_event("EMBER_OVERLAY_ERROR", detail=str(exc))
+    if _embodiment is None:
+        # Mobile embodiment still receives state even when the Windows overlay
+        # is disabled or cannot start.
+        _embodiment = EmbodimentController(render_body_command)
     _dashboard = DashboardHub(ROOT, CONFIG, _shutdown_requested)
     _dashboard.set_context_services(_memory_store, _game_events)
     _dashboard.set_budget_handlers(budget_state, resume_autonomy_budget)
     _dashboard.set_body_test_handler(test_body_sequence)
+    set_body_state(BodyState.IDLE, "dashboard_ready")
     import_existing_memory_history()
     try:
         _dashboard.start(
             port=int(CONFIG.get("dashboard_port", 8766)),
             open_browser=bool(CONFIG.get("dashboard_open_browser", True)),
+            host=("0.0.0.0" if CONFIG.get("mobile_enabled", False) else "127.0.0.1"),
         )
-        log_event("DASHBOARD_READY", url=f"http://127.0.0.1:{int(CONFIG.get('dashboard_port', 8766))}/")
+        log_event(
+            "DASHBOARD_READY",
+            url=f"http://127.0.0.1:{int(CONFIG.get('dashboard_port', 8766))}/",
+            mobile_enabled=bool(CONFIG.get("mobile_enabled", False)),
+        )
     except Exception as exc:
         log_event("DASHBOARD_ERROR", detail=str(exc))
     if CONFIG.get("game_event_awareness", True):
@@ -1574,7 +1591,7 @@ def main():
 
     try:
         while not _shutdown_requested.is_set():
-            transcript = pop_transcript(voice_listener)
+            transcript = _dashboard.pop_mobile_turn() or pop_transcript(voice_listener)
             if transcript:
                 handle_spoken_turn(
                     client, direct_route["model"], direct_route["reasoning_effort"],

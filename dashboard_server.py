@@ -1,7 +1,10 @@
 import base64
+import hmac
+import ipaddress
 import json
 import mimetypes
 import os
+import queue
 import re
 import threading
 import time
@@ -31,6 +34,8 @@ class DashboardHub:
         self.started_at = time.time()
         self.lock = threading.Lock()
         self.messages = deque(maxlen=80)
+        self.mobile_turns = queue.Queue(maxsize=20)
+        self.body_command = {"action": "state", "state": "idle", "reason": "startup"}
         self.logs = deque(maxlen=120)
         self.youtube_history = deque(maxlen=30)
         self.youtube_command_seq = 0
@@ -80,6 +85,49 @@ class DashboardHub:
 
     def set_body_test_handler(self, handler):
         self.body_test_handler = handler
+
+    def submit_mobile_turn(self, text, device="Android"):
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not text:
+            raise ValueError("Message cannot be empty.")
+        if len(text) > 2000:
+            raise ValueError("Message is too long.")
+        turn = {
+            "text": text,
+            "timing": {},
+            "source": "android",
+            "device": re.sub(r"\s+", " ", str(device or "Android")).strip()[:80],
+        }
+        try:
+            self.mobile_turns.put_nowait(turn)
+        except queue.Full:
+            raise ValueError("Ember is still catching up. Try again in a moment.")
+        with self.lock:
+            self.messages.append({
+                "speaker": "Tony", "text": text,
+                "time": datetime.now().strftime("%H:%M:%S"),
+            })
+        return {"accepted": True, "queued": self.mobile_turns.qsize()}
+
+    def pop_mobile_turn(self):
+        try:
+            return self.mobile_turns.get_nowait()
+        except queue.Empty:
+            return None
+
+    def record_body_command(self, command):
+        with self.lock:
+            self.body_command = dict(command)
+
+    def mobile_snapshot(self):
+        with self.lock:
+            return {
+                "phase": self.state["phase"],
+                "phase_label": self.state["phase_label"],
+                "messages": list(self.messages),
+                "body": dict(self.body_command),
+                "server_time": datetime.now().isoformat(timespec="seconds"),
+            }
 
     def resume_budget(self):
         if self.budget_resume_handler is None:
@@ -862,12 +910,26 @@ class DashboardHub:
             tmp_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
             os.replace(tmp_path, config_path)
 
-    def start(self, port=8766, open_browser=True):
+    def start(self, port=8766, open_browser=True, host="127.0.0.1"):
         hub = self
         dashboard_root = self.root / "dashboard_static"
+        mobile_root = self.root / "mobile_static"
         stylesheet_path = self.root / "dashboard" / "app" / "globals.css"
+        mobile_token = str(self.config.get("mobile_access_token", "")).strip()
 
         class Handler(BaseHTTPRequestHandler):
+            def _local_request(self):
+                try:
+                    return ipaddress.ip_address(self.client_address[0]).is_loopback
+                except ValueError:
+                    return False
+
+            def _mobile_authorized(self):
+                if not mobile_token:
+                    return False
+                supplied = self.headers.get("Authorization", "")
+                return hmac.compare_digest(supplied, f"Bearer {mobile_token}")
+
             def _origin_allowed(self):
                 origin = self.headers.get("Origin")
                 return origin in {
@@ -895,14 +957,32 @@ class DashboardHub:
 
             def do_GET(self):
                 path = urlparse(self.path).path
+                if path == "/api/mobile/state":
+                    if not self._mobile_authorized():
+                        self._json({"error": "Unauthorized"}, 401)
+                        return
+                    self._json(hub.mobile_snapshot())
+                    return
+                if not path.startswith("/mobile") and not self._local_request():
+                    self._json({"error": "Desktop dashboard is local only"}, 403)
+                    return
                 if path == "/api/state":
                     self._json(hub.snapshot())
                     return
+                if path in {"/mobile", "/mobile/", "/mobile/index.html"}:
+                    file_path = mobile_root / "index.html"
+                elif path == "/mobile/spritesheet.webp":
+                    file_path = self.root / "ember" / "assets" / "spritesheet.webp"
+                elif path.startswith("/mobile/"):
+                    file_path = (mobile_root / path.removeprefix("/mobile/")).resolve()
+                    if mobile_root.resolve() not in file_path.parents:
+                        self._json({"error": "Not found"}, 404)
+                        return
                 if path == "/styles.css":
                     file_path = stylesheet_path
                 elif path in {"/", "/index.html"}:
                     file_path = dashboard_root / "index.html"
-                else:
+                elif not path.startswith("/mobile"):
                     file_path = (dashboard_root / path.lstrip("/")).resolve()
                     if dashboard_root.resolve() not in file_path.parents:
                         self._json({"error": "Not found"}, 404)
@@ -916,10 +996,16 @@ class DashboardHub:
                 self.wfile.write(body)
 
             def do_POST(self):
-                if not self._origin_allowed():
+                path = urlparse(self.path).path
+                if path.startswith("/api/mobile/") and not self._mobile_authorized():
+                    self._json({"error": "Unauthorized"}, 401)
+                    return
+                if not path.startswith("/api/mobile/") and not self._local_request():
+                    self._json({"error": "Desktop dashboard is local only"}, 403)
+                    return
+                if not path.startswith("/api/mobile/") and not self._origin_allowed():
                     self._json({"error": "Forbidden"}, 403)
                     return
-                path = urlparse(self.path).path
                 length = int(self.headers.get("Content-Length", "0"))
                 request_limit = 4096
                 if length > request_limit:
@@ -927,7 +1013,12 @@ class DashboardHub:
                     return
                 try:
                     payload = json.loads(self.rfile.read(length) or b"{}")
-                    if path == "/api/control":
+                    if path == "/api/mobile/message":
+                        result = hub.submit_mobile_turn(
+                            payload.get("text"), payload.get("device", "Android")
+                        )
+                        self._json({"ok": True, **result}, 202)
+                    elif path == "/api/control":
                         hub.update_control(payload.get("name"), payload.get("value"))
                         self._json({"ok": True, "controls": hub.snapshot()["controls"]})
                     elif path == "/api/voice":
@@ -990,7 +1081,7 @@ class DashboardHub:
             def log_message(self, format, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", int(port)), Handler)
+        self.server = ThreadingHTTPServer((str(host), int(port)), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         if open_browser:
